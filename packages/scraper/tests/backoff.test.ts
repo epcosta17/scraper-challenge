@@ -23,6 +23,12 @@ describe('backoffDelay', () => {
   it('never returns a negative delay', () => {
     expect(backoffDelay(0, { baseMs: 10 }, () => 0)).toBeGreaterThanOrEqual(0)
   })
+
+  it('never exceeds the cap once jitter is applied', () => {
+    expect(backoffDelay(20, {}, () => 1)).toBeLessThanOrEqual(DEFAULT_BACKOFF.capMs)
+    expect(backoffDelay(20, {}, () => 1)).toBe(DEFAULT_BACKOFF.capMs)
+    expect(backoffDelay(20, {}, () => 0)).toBe(45_000)  // cap minus 25%
+  })
 })
 
 describe('retryAfterMs', () => {

@@ -27,7 +27,7 @@ export function backoffDelay(
   const o = { ...DEFAULT_BACKOFF, ...opts }
   const raw = Math.min(o.baseMs * o.factor ** attempt, o.capMs)
   const offset = (random() * 2 - 1) * o.jitter // -jitter..+jitter
-  return Math.max(0, Math.round(raw * (1 + offset)))
+  return Math.max(0, Math.min(Math.round(raw * (1 + offset)), o.capMs))
 }
 
 /** Parse a Retry-After header in either delay-seconds or HTTP-date form. */
