@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# working notes and internal planning — not part of the deliverable
+RECON.md
+docs/
+.superpowers/
+.playwright-mcp/
+
+# scraped output and runtime caches
+data/
