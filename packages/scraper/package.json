@@ -1,0 +1,7 @@
+{
+  "name": "@pje/scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/cli.ts",
+  "dependencies": { "@pje/core": "*" }
+}
