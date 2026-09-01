@@ -31,6 +31,62 @@ describe('extractTextStreams', () => {
     const streams = extractTextStreams(fakePdf)
     expect(streams.join('')).toContain('before endstream after')
   })
+
+  it('does not let a non-inflatable stream hide the streams that follow it', () => {
+    // A stream using a non-Flate filter (image, font: DCTDecode, CCITTFaxDecode,
+    // etc.) never inflates no matter which `endstream` candidate is tried. That
+    // must not take down extraction of the streams that come after it.
+    const nonInflatable = Buffer.concat([
+      Buffer.from('%PDF-1.4\n<< /Length 99 /Filter /DCTDecode >>\nstream\n'),
+      Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+      Buffer.from(' not deflate'),
+      Buffer.from('\nendstream\n'),
+    ])
+
+    const content = Buffer.from('BT (second stream text) Tj ET')
+    const body = deflateSync(content)
+    const textStream = Buffer.concat([
+      Buffer.from('<< /Length 50 /Filter /FlateDecode >>\nstream\n'),
+      body,
+      Buffer.from('\nendstream\n'),
+    ])
+
+    const fakePdf = Buffer.concat([nonInflatable, textStream])
+
+    const streams = extractTextStreams(fakePdf)
+    expect(streams.join('')).toContain('second stream text')
+  })
+
+  it('bounds the retry so a non-inflatable stream cannot swallow several later streams', () => {
+    const nonInflatable = Buffer.concat([
+      Buffer.from('%PDF-1.4\n<< /Length 99 /Filter /DCTDecode >>\nstream\n'),
+      Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+      Buffer.from(' not deflate'),
+      Buffer.from('\nendstream\n'),
+    ])
+
+    const makeTextStream = (text: string) => {
+      const body = deflateSync(Buffer.from(`BT (${text}) Tj ET`))
+      return Buffer.concat([
+        Buffer.from('<< /Length 50 /Filter /FlateDecode >>\nstream\n'),
+        body,
+        Buffer.from('\nendstream\n'),
+      ])
+    }
+
+    const fakePdf = Buffer.concat([
+      nonInflatable,
+      makeTextStream('stream two'),
+      makeTextStream('stream three'),
+      makeTextStream('stream four'),
+    ])
+
+    const streams = extractTextStreams(fakePdf)
+    const joined = streams.join('')
+    expect(joined).toContain('stream two')
+    expect(joined).toContain('stream three')
+    expect(joined).toContain('stream four')
+  })
 })
 
 describe('reconstructText', () => {
