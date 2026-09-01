@@ -23,9 +23,9 @@ export class SearchValidationError extends Error {
 }
 
 export class ActionNotExecutedError extends Error {
-  constructor() {
+  constructor(reason: string = 'only the message panel re-rendered') {
     super(
-      'The search action did not execute (only the message panel re-rendered). ' +
+      `The search action did not execute (${reason}). ` +
       'This usually means the submit parameter is stale — re-read it from the page.',
     )
     this.name = 'ActionNotExecutedError'
@@ -84,8 +84,11 @@ export function buildSearchPayload(
     'tipoMascaraDocumento': f.documentType ?? 'cpf',
     'fPP:j_id180:nomeAdv': f.lawyer ?? '',
     'fPP:Decoration:numeroOAB': f.oab ?? '',
+    // `||`, not `??`: an explicit empty string means "no state selected"
+    // exactly like an absent field, and must carry the same sentinel — the
+    // server ignores anything else silently.
     'fPP:Decoration:estadoComboOAB':
-      f.oabState ?? 'org.jboss.seam.ui.NoSelectionConverter.noSelectionValue',
+      f.oabState || 'org.jboss.seam.ui.NoSelectionConverter.noSelectionValue',
     'fPP:j_id189:classeJudicial': f.class ?? '',
     'fPP:j_id162:processoReferenciaInput': f.reference ?? '',
     'mascaraProcessoReferenciaRadio': 'on',
@@ -120,7 +123,17 @@ export interface SearchOutcome {
 
 export function parseSearchResponse(xml: string): SearchOutcome {
   const updateIds = [...xml.matchAll(/Ajax-Update-Ids"\s+content="([^"]*)"/g)].map((m) => m[1]!)
-  if (updateIds.length > 0 && !updateIds.some((id) => id.includes('processosGridPanel'))) {
+  // A normal AJAX response always carries this header. Its total absence
+  // (error page, expired session, anything non-standard) is not "zero
+  // results" either — reaching that conclusion by falling through the
+  // `some()` check below would be the same silent-empty-result lie through a
+  // different door.
+  if (updateIds.length === 0) {
+    throw new ActionNotExecutedError(
+      'the response carried no Ajax-Update-Ids header at all — likely an error page or an expired session',
+    )
+  }
+  if (!updateIds.some((id) => id.includes('processosGridPanel'))) {
     throw new ActionNotExecutedError()
   }
 

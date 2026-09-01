@@ -50,8 +50,44 @@ describe('buildSearchPayload', () => {
     expect(p['fPP:dataAutuacaoDecoration:dataAutuacaoInicioInputDate']).toBe('25/08/2026')
   })
 
+  it('maps every SearchFilters field onto its real JSF field name', () => {
+    // A typo in any one of these field names would pass every other test and
+    // then silently change behaviour against the real server.
+    const p = buildSearchPayload(session, {
+      number: '0013201-41.2025.4.05.8202',
+      from: '25/08/2026',
+      to: '26/08/2026',
+      class: 'AGRAVO DE INSTRUMENTO',
+      party: 'DA SILVA',
+      lawyer: 'DE SOUZA',
+      document: '12345678900',
+      documentType: 'cnpj',
+      oab: '1234',
+      oabState: 'PE',
+      reference: '0099887-11.2020.4.05.8202',
+    }, today)
+    expect(p['fPP:numProcesso-inputNumeroProcessoDecoration:numProcesso-inputNumeroProcesso'])
+      .toBe('0013201-41.2025.4.05.8202')
+    expect(p['fPP:dataAutuacaoDecoration:dataAutuacaoInicioInputDate']).toBe('25/08/2026')
+    expect(p['fPP:dataAutuacaoDecoration:dataAutuacaoFimInputDate']).toBe('26/08/2026')
+    expect(p['fPP:j_id189:classeJudicial']).toBe('AGRAVO DE INSTRUMENTO')
+    expect(p['fPP:dnp:nomeParte']).toBe('DA SILVA')
+    expect(p['fPP:j_id180:nomeAdv']).toBe('DE SOUZA')
+    expect(p['fPP:dpDec:documentoParte']).toBe('12345678900')
+    expect(p['tipoMascaraDocumento']).toBe('cnpj')
+    expect(p['fPP:Decoration:numeroOAB']).toBe('1234')
+    expect(p['fPP:Decoration:estadoComboOAB']).toBe('PE')
+    expect(p['fPP:j_id162:processoReferenciaInput']).toBe('0099887-11.2020.4.05.8202')
+  })
+
   it('sends the no-selection sentinel when no OAB state is given', () => {
     const p = buildSearchPayload(session, {}, today)
+    expect(p['fPP:Decoration:estadoComboOAB'])
+      .toBe('org.jboss.seam.ui.NoSelectionConverter.noSelectionValue')
+  })
+
+  it('sends the no-selection sentinel when oabState is an explicit empty string', () => {
+    const p = buildSearchPayload(session, { oabState: '' }, today)
     expect(p['fPP:Decoration:estadoComboOAB'])
       .toBe('org.jboss.seam.ui.NoSelectionConverter.noSelectionValue')
   })
@@ -96,6 +132,10 @@ describe('validateFilters', () => {
     expect(() => validateFilters({ oabState: 'PE', oab: '1234' })).not.toThrow()
   })
 
+  it('treats an explicit empty oabState the same as absent', () => {
+    expect(() => validateFilters({ oabState: '' })).not.toThrow()
+  })
+
   it('rejects malformed dates', () => {
     expect(() => validateFilters({ from: '2026-08-25' })).toThrow(SearchValidationError)
     expect(() => validateFilters({ from: '25/08/2026' })).not.toThrow()
@@ -122,5 +162,14 @@ describe('parseSearchResponse', () => {
     // Ajax-Update-Ids = fPP:j_id248 means only the message panel re-rendered.
     expect(() => parseSearchResponse(fx('search-not-executed.xml')))
       .toThrow(ActionNotExecutedError)
+  })
+
+  it('throws when Ajax-Update-Ids is missing entirely, not just carrying the wrong id', () => {
+    // An error page, expired session, or any non-standard AJAX response has
+    // no Ajax-Update-Ids meta tag at all. Treating "header absent" as
+    // "search ran, zero rows" would be the same silent-empty-result lie
+    // reached through a different door.
+    const xmlWithoutHeader = '<partial-response><changes></changes></partial-response>'
+    expect(() => parseSearchResponse(xmlWithoutHeader)).toThrow(ActionNotExecutedError)
   })
 })
