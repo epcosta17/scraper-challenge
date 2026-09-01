@@ -9,6 +9,27 @@ export interface HttpResponse {
   body: Buffer
 }
 
+/**
+ * What one request did, as it happens. Consumed by `--verbose` (see
+ * `reporter.ts`): the layer above narrates *intent* — "fetching the summary
+ * PDF" — and these are the requests underneath it, including the retries
+ * that intent never mentions. `retry` is emitted *before* the wait, with
+ * the wait it is about to take, so a run that has gone quiet for 30 seconds
+ * has already said why.
+ */
+export type HttpEvent =
+  | { kind: 'request'; method: string; url: string; attempt: number }
+  | { kind: 'response'; method: string; url: string; status: number; bytes: number; ms: number }
+  | {
+      kind: 'retry'
+      url: string
+      reason: 'rate_limited' | 'server_error' | 'transport'
+      status: number | null
+      delayMs: number
+      attempt: number
+      of: number
+    }
+
 export interface HttpClientOptions {
   /** Requests per second; 0 disables pacing (used in tests). */
   rps?: number
@@ -17,6 +38,7 @@ export interface HttpClientOptions {
   sleep?: (ms: number) => Promise<void>
   userAgent?: string
   jar?: CookieJar
+  onEvent?: (e: HttpEvent) => void
 }
 
 export class RateLimitedError extends Error {
@@ -71,6 +93,7 @@ export class HttpClient {
   private readonly backoff: Partial<BackoffOptions>
   private readonly userAgent: string
   private readonly pacing: PaceState
+  private readonly onEvent?: (e: HttpEvent) => void
 
   constructor(o: HttpClientOptions = {}, pacing?: PaceState) {
     this.jar = o.jar ?? new CookieJar()
@@ -80,6 +103,7 @@ export class HttpClient {
     this.backoff = o.backoff ?? {}
     this.userAgent = o.userAgent ?? DEFAULT_UA
     this.pacing = pacing ?? { nextSlot: 0, attemptCount: 0 }
+    this.onEvent = o.onEvent
   }
 
   get attempts(): number {
@@ -105,6 +129,7 @@ export class HttpClient {
         sleep: this.sleep,
         userAgent: this.userAgent,
         jar,
+        onEvent: this.onEvent,
       },
       this.pacing,
     )
@@ -133,6 +158,7 @@ export class HttpClient {
 
   async request(url: string, init: RequestInit = {}): Promise<HttpResponse> {
     const maxAttempts = this.backoff.maxAttempts ?? DEFAULT_BACKOFF.maxAttempts
+    const method = init.method ?? 'GET'
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await this.pace()
@@ -143,13 +169,18 @@ export class HttpClient {
       headers.set('User-Agent', this.userAgent)
       if (cookie) headers.set('Cookie', cookie)
 
+      this.onEvent?.({ kind: 'request', method, url, attempt: attempt + 1 })
+      const startedAt = Date.now()
+
       let res: Response
       try {
         res = await this.fetchImpl(url, { ...init, headers, redirect: 'follow' })
       } catch (err) {
         // Transport failure: retry on the same ladder as a 5xx.
         if (attempt === maxAttempts - 1) throw err
-        await this.sleep(backoffDelay(attempt, this.backoff))
+        const delay = backoffDelay(attempt, this.backoff)
+        this.onEvent?.({ kind: 'retry', url, reason: 'transport', status: null, delayMs: delay, attempt: attempt + 1, of: maxAttempts })
+        await this.sleep(delay)
         continue
       }
 
@@ -164,21 +195,26 @@ export class HttpClient {
         // computed path — an unbounded `Retry-After: 86400` would otherwise
         // sleep a worker for 24 hours.
         const delay = hinted !== null ? Math.min(hinted, capMs) : backoffDelay(attempt, this.backoff)
+        this.onEvent?.({ kind: 'retry', url, reason: 'rate_limited', status: 429, delayMs: delay, attempt: attempt + 1, of: maxAttempts })
         this.bumpNextSlot(delay)
         await this.sleep(delay)
         continue
       }
 
       if (res.status >= 500 && attempt < maxAttempts - 1) {
-        await this.sleep(backoffDelay(attempt, this.backoff))
+        const delay = backoffDelay(attempt, this.backoff)
+        this.onEvent?.({ kind: 'retry', url, reason: 'server_error', status: res.status, delayMs: delay, attempt: attempt + 1, of: maxAttempts })
+        await this.sleep(delay)
         continue
       }
 
+      const body = Buffer.from(await res.arrayBuffer())
+      this.onEvent?.({ kind: 'response', method, url, status: res.status, bytes: body.length, ms: Date.now() - startedAt })
       return {
         status: res.status,
         url: res.url,
         headers: res.headers,
-        body: Buffer.from(await res.arrayBuffer()),
+        body,
       }
     }
 

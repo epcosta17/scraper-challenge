@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { HttpClient, RateLimitedError, decodeLatin1 } from '../src/http/client.ts'
+import { HttpClient, RateLimitedError, decodeLatin1, type HttpEvent } from '../src/http/client.ts'
 import { CookieJar } from '../src/http/cookie-jar.ts'
 import { DEFAULT_BACKOFF } from '../src/http/backoff.ts'
 
@@ -191,5 +191,64 @@ describe('decodeLatin1', () => {
     // "Inspeção" in latin1
     const bytes = Buffer.from([0x49, 0x6e, 0x73, 0x70, 0x65, 0xe7, 0xe3, 0x6f])
     expect(decodeLatin1(bytes)).toBe('Inspeção')
+  })
+})
+
+describe('request-level events (what --verbose reports)', () => {
+  it('announces a request before it goes out and reports the response it got', async () => {
+    const f = stubFetch([{ status: 200, body: 'hello' }])
+    const events: HttpEvent[] = []
+    const client = new HttpClient({ fetchImpl: f.impl, sleep: noSleep, rps: 0, onEvent: (e) => events.push(e) })
+
+    await client.request('https://example.test/x')
+
+    expect(events).toEqual([
+      { kind: 'request', method: 'GET', url: 'https://example.test/x', attempt: 1 },
+      expect.objectContaining({ kind: 'response', status: 200, bytes: 5 }),
+    ])
+  })
+
+  it('reports a 429 as a retry carrying the wait it is about to take', async () => {
+    const f = stubFetch([{ status: 429, headers: { 'retry-after': '2' } }, { status: 200, body: 'ok' }])
+    const events: HttpEvent[] = []
+    const client = new HttpClient({ fetchImpl: f.impl, sleep: noSleep, rps: 0, onEvent: (e) => events.push(e) })
+
+    await client.request('https://example.test/x')
+
+    expect(events.filter((e) => e.kind === 'retry')).toEqual([
+      expect.objectContaining({ kind: 'retry', reason: 'rate_limited', status: 429, delayMs: 2000, attempt: 1, of: DEFAULT_BACKOFF.maxAttempts }),
+    ])
+  })
+
+  it('reports a 5xx retry and a transport failure under their own reasons', async () => {
+    const serverError = stubFetch([{ status: 503 }, { status: 200, body: 'ok' }])
+    const events: HttpEvent[] = []
+    await new HttpClient({ fetchImpl: serverError.impl, sleep: noSleep, rps: 0, onEvent: (e) => events.push(e) })
+      .request('https://example.test/x')
+    expect(events.filter((e) => e.kind === 'retry')).toEqual([
+      expect.objectContaining({ reason: 'server_error', status: 503 }),
+    ])
+
+    let calls = 0
+    const flaky = (async () => {
+      if (++calls === 1) throw new Error('socket hang up')
+      return new Response('ok', { status: 200 })
+    }) as unknown as typeof fetch
+    const transportEvents: HttpEvent[] = []
+    await new HttpClient({ fetchImpl: flaky, sleep: noSleep, rps: 0, onEvent: (e) => transportEvents.push(e) })
+      .request('https://example.test/x')
+    expect(transportEvents.filter((e) => e.kind === 'retry')).toEqual([
+      expect.objectContaining({ reason: 'transport', status: null }),
+    ])
+  })
+
+  it('keeps reporting through a client derived with withJar', async () => {
+    const f = stubFetch([{ status: 200, body: 'ok' }])
+    const events: HttpEvent[] = []
+    const client = new HttpClient({ fetchImpl: f.impl, sleep: noSleep, rps: 0, onEvent: (e) => events.push(e) })
+
+    await client.withJar(new CookieJar()).request('https://example.test/derived')
+
+    expect(events.map((e) => e.kind)).toEqual(['request', 'response'])
   })
 })
