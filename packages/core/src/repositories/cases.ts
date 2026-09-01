@@ -28,6 +28,9 @@ interface Row {
   subjects_json: string
   parties_json: string
   summary_pdf_key: string | null
+  jurisdiction: string | null
+  court_address: string | null
+  reference_number: string | null
 }
 
 const toStored = (r: Row): StoredCase => ({
@@ -42,6 +45,9 @@ const toStored = (r: Row): StoredCase => ({
   subjects: JSON.parse(r.subjects_json) as string[],
   parties: JSON.parse(r.parties_json) as Party[],
   summaryPdfKey: r.summary_pdf_key,
+  jurisdiction: r.jurisdiction,
+  courtAddress: r.court_address,
+  referenceNumber: r.reference_number,
 })
 
 export function upsertCase(db: Db, c: StoredCase): void {
@@ -66,10 +72,12 @@ function runUpsert(db: Db, c: StoredCase): void {
     INSERT INTO cases (
       id_processo_trf, number, ca, class_code, class_name, court, panel,
       distributed_at, subjects_json, parties_json, summary_pdf_key,
+      jurisdiction, court_address, reference_number,
       first_seen_at, last_scraped_at
     ) VALUES (
       @id, @number, @ca, @classCode, @className, @court, @panel,
       @distributedAt, @subjects, @parties, @pdfKey,
+      @jurisdiction, @courtAddress, @referenceNumber,
       datetime('now'), datetime('now')
     )
     ON CONFLICT(id_processo_trf) DO UPDATE SET
@@ -83,6 +91,14 @@ function runUpsert(db: Db, c: StoredCase): void {
       subjects_json = CASE WHEN excluded.subjects_json = '[]' THEN cases.subjects_json ELSE excluded.subjects_json END,
       parties_json = CASE WHEN excluded.parties_json = '[]' THEN cases.parties_json ELSE excluded.parties_json END,
       summary_pdf_key = COALESCE(excluded.summary_pdf_key, cases.summary_pdf_key),
+      -- Only ever known once the detail page has been fetched (see
+      -- deep.ts's first, detail-less upsert right after the summary PDF),
+      -- so a call that doesn't have them yet must not blank out a value a
+      -- previous run already captured -- same COALESCE treatment as ca
+      -- and summary_pdf_key above.
+      jurisdiction = COALESCE(excluded.jurisdiction, cases.jurisdiction),
+      court_address = COALESCE(excluded.court_address, cases.court_address),
+      reference_number = COALESCE(excluded.reference_number, cases.reference_number),
       last_scraped_at = datetime('now')
   `).run({
     id: c.idProcessoTrf,
@@ -96,6 +112,9 @@ function runUpsert(db: Db, c: StoredCase): void {
     subjects: JSON.stringify(c.subjects),
     parties: JSON.stringify(c.parties),
     pdfKey: c.summaryPdfKey,
+    jurisdiction: c.jurisdiction,
+    courtAddress: c.courtAddress,
+    referenceNumber: c.referenceNumber,
   })
 }
 

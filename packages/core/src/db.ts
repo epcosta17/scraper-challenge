@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { SCHEMA } from './schema.ts'
+import { SCHEMA, migrateSchema } from './schema.ts'
 
 export type Db = Database.Database
 
@@ -21,5 +21,9 @@ export function openDatabase(path: string): Db {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
   db.exec(SCHEMA)
+  // Adds columns a pre-existing database (created before this migration
+  // existed) is missing — see `migrateSchema`'s own doc comment for why
+  // `CREATE TABLE IF NOT EXISTS` above can't cover this by itself.
+  migrateSchema(db)
   return db
 }
