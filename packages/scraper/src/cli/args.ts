@@ -1,7 +1,7 @@
 import type { SearchFilters } from '../pje/search.ts'
 
-export type Command = 'search' | 'crawl' | 'case' | 'deep' | 'daily'
-const COMMANDS: Command[] = ['search', 'crawl', 'case', 'deep', 'daily']
+export type Command = 'search' | 'crawl' | 'case' | 'deep' | 'daily' | 'find'
+const COMMANDS: Command[] = ['search', 'crawl', 'case', 'deep', 'daily', 'find']
 
 export class ArgsError extends Error {
   constructor(message: string) {
@@ -16,6 +16,7 @@ export interface ParsedArgs {
   fromId?: number
   toId?: number
   limit?: number
+  offset?: number
   concurrency: number
   rps: number
   db: string
@@ -77,6 +78,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     return n
   }
+  // `--offset` is the one numeric flag where 0 is a legitimate value (the
+  // first page), so it cannot go through `positiveInt` — but a negative or
+  // fractional offset still has no meaning and must not reach SQL.
+  const nonNegativeInt = (flag: string, raw: string): number => {
+    const n = Number(raw)
+    if (!Number.isInteger(n) || n < 0) {
+      throw new ArgsError(`${flag} requires a non-negative integer, got "${raw}".`)
+    }
+    return n
+  }
   const positiveNumber = (flag: string, raw: string): number => {
     const n = Number(raw)
     if (!Number.isFinite(n) || n <= 0) {
@@ -105,6 +116,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--from-id': out.fromId = positiveInt(arg, value(arg, i++)); break
       case '--to-id': out.toId = positiveInt(arg, value(arg, i++)); break
       case '--limit': out.limit = positiveInt(arg, value(arg, i++)); break
+      case '--offset': out.offset = nonNegativeInt(arg, value(arg, i++)); break
       case '--concurrency': out.concurrency = positiveInt(arg, value(arg, i++)); break
       case '--rate': out.rps = positiveNumber(arg, value(arg, i++)); break
       case '--db': out.db = value(arg, i++); break
@@ -165,6 +177,29 @@ export function validateCommandUsage(args: ParsedArgs): void {
     )
   }
 
+  if (args.command === 'find') {
+    if (args.positional.length === 0) {
+      throw new ArgsError(
+        "'find' requires a query (e.g. `find \"execução fiscal\"`). It searches the local " +
+        'database, not the portal — use \'search\' for the portal\'s own form.',
+      )
+    }
+    if (args.positional.length > 1) {
+      throw new ArgsError(
+        `'find' takes exactly one query, got ${args.positional.length} ` +
+        `(${args.positional.map((p) => JSON.stringify(p)).join(', ')}). ` +
+        'Quote the whole query so the shell passes it as one argument, e.g. ' +
+        `\`find ${JSON.stringify(args.positional.join(' '))}\`.`,
+      )
+    }
+    // Every other command's --dry-run plans work that would otherwise hit
+    // the network or write to disk. 'find' does neither, so accepting the
+    // flag could only ever mean silently ignoring it.
+    if (args.dryRun) {
+      throw new ArgsError("--dry-run has no meaning for 'find': it only reads the local database.")
+    }
+  }
+
   if (args.command === 'deep') {
     const hasRange = args.fromId !== undefined || args.toId !== undefined
     const hasFullRange = args.fromId !== undefined && args.toId !== undefined
@@ -208,6 +243,7 @@ COMMANDS
   deep     Fetch a case (by number or internal id, or a --from-id/--to-id range)
            and download every document in its file, PDFs and HTML alike
   daily    Advance the watermark: scrape only cases newer than the last run
+  find     Full-text search the local database (offline; no portal request)
 
 DEEP TARGET (exactly one form; see USAGE above)
   <number|id>           a case number (e.g. 0013201-41.2025.4.05.8202) or a bare
@@ -218,6 +254,17 @@ DEEP TARGET (exactly one form; see USAGE above)
 
   A single case costs roughly 11 requests: 1 summary PDF + 1 search (skipped
   when a still-valid ca is already on file) + 1 detail page + ~9 documents.
+
+FIND (local full-text search, distinct from 'search' above)
+  scraper find "<query>"        one quoted query; searches case numbers and
+                                metadata, party names and document text
+  --limit <n>           results per page (default: 20)
+  --offset <n>          skip the first n results (default: 0)
+  --json                the full result set, snippets included, as JSON
+
+  Terms are ANDed. "a phrase" matches in order, trailing * is a prefix
+  search, and AND/OR/NOT in uppercase are operators. Accents are optional
+  either way: 'find execucao' and 'find execução' return the same cases.
 
 SEARCH FILTERS (mirror the website's form)
   --number <n>          exact CNJ case number
@@ -236,7 +283,7 @@ SEARCH FILTERS (mirror the website's form)
 CRAWL RANGE (internal counter, distinct from the date filters above)
   --from-id <n>         first idProcessoTrf (default: resume from the database)
   --to-id <n>           last idProcessoTrf
-  --limit <n>           stop after n ids
+  --limit <n>           stop after n ids (also the page size for 'find')
 
   'daily' always resumes from the stored watermark and rejects --from-id/--to-id;
   use 'crawl' for an explicit range.

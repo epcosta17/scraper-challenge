@@ -1,4 +1,4 @@
-import { openDatabase, FsBlobStore, listFailures } from '@pje/core'
+import { openDatabase, FsBlobStore, listFailures, searchCases, SearchQueryError, type SearchResults } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
 import { startSession } from '../pje/session.ts'
 import { search, validateFilters, SearchValidationError } from '../pje/search.ts'
@@ -50,6 +50,39 @@ function reportUnresolvedFailures(db: Parameters<typeof listFailures>[0], comman
 }
 
 /**
+ * Renders `find` results for a terminal. Deliberately here rather than in
+ * `format.ts`: `find` exists to exercise the search from a shell, and one
+ * local helper is the smallest thing that does that.
+ *
+ * One block per case — the identifying line, the class and court, then the
+ * matching document and its highlighted fragment. The trailing line reports
+ * the full match count, not the page's, so a capped page never reads as the
+ * whole answer.
+ */
+function findResultLines(results: SearchResults): string {
+  const blocks = results.hits.map((hit) => {
+    const lines = [
+      `${hit.number}  id=${hit.idProcessoTrf}  score=${hit.score.toFixed(2)}  [${hit.matchedIn.join('+')}]`,
+      `  ${[hit.className, hit.court].filter(Boolean).join(' — ')}`,
+    ]
+    if (hit.snippet) {
+      lines.push(`  ${hit.snippet.label}`)
+      // Snippets are extracted from PDF text and can carry newlines; a
+      // result block that spills over several lines loses the shape.
+      lines.push(`    ${hit.snippet.text.replace(/\s+/g, ' ').trim()}`)
+    }
+    return lines.join('\n')
+  })
+
+  const shown = results.hits.length
+  const first = results.offset + 1
+  const tail = results.total === 0
+    ? '0 results'
+    : `${shown} of ${results.total} results (showing ${first}-${results.offset + shown})`
+  return [...blocks, '', tail].join('\n')
+}
+
+/**
  * The whole CLI, importable and side-effect-free at module scope so tests
  * can drive it directly. `cli.ts` is the only thing that invokes this, and
  * it does so unconditionally — there is no "am I the entry point?" guard
@@ -76,6 +109,20 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
     // Cross-field, pre-flight checks (never a silent no-op, never a silent
     // misinterpretation) — all before any network call.
     validateCommandUsage(args)
+
+    // Purely local: `find` reads the database this scraper filled and never
+    // contacts the portal, which is why it is handled before the HttpClient
+    // below is even constructed.
+    if (args.command === 'find') {
+      const db = openDatabase(args.db)
+      try {
+        const results = searchCases(db, args.positional[0]!, { limit: args.limit, offset: args.offset })
+        console.log(args.json ? JSON.stringify(results, null, 2) : findResultLines(results))
+        return 0
+      } finally {
+        db.close()
+      }
+    }
 
     if (args.command === 'case') {
       console.error(
@@ -233,7 +280,9 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       db.close()
     }
   } catch (err) {
-    if (err instanceof ArgsError || err instanceof SearchValidationError) {
+    // SearchQueryError is the same class of mistake as a bad flag — the
+    // query as typed cannot be run — so it exits 2 like the rest of them.
+    if (err instanceof ArgsError || err instanceof SearchValidationError || err instanceof SearchQueryError) {
       console.error(`error: ${err.message}`)
       return 2
     }
