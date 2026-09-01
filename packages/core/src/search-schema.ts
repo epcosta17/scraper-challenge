@@ -58,7 +58,10 @@ const TOKENIZER = `tokenize = "unicode61 remove_diacritics 2"`
  * stores only the terms, and `snippet()`/`highlight()` read the original
  * text back from the base table on demand. For `documents.text_content` —
  * whole PDFs, by far the largest column in the database — that is the
- * difference between one copy of the corpus and two.
+ * difference between one copy of the corpus and two. Measured over 31 real
+ * scraped documents (166 KB of text): 139 KB of index with `content=`
+ * against 336 KB without it, the extra being the second copy of the text
+ * FTS5 would otherwise keep for itself.
  *
  * Kept out of `SCHEMA` on purpose: `ensureSearchIndex` needs to know whether
  * it is *creating* these tables (in which case a pre-existing database's
