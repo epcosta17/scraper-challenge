@@ -127,7 +127,7 @@ describe('probes repository', () => {
 
   it('returns probed ids as a set for crawl skipping', () => {
     recordProbe(db, 1, 'not_found')
-    recordProbe(db, 2, 'secret')
+    recordProbe(db, 2, 'not_found')
     expect(getProbedIds(db)).toEqual(new Set([1, 2]))
   })
 })

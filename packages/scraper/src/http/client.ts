@@ -39,10 +39,6 @@ export function decodeLatin1(b: Buffer): string {
   return new TextDecoder('iso-8859-1').decode(b)
 }
 
-export function decodeUtf8(b: Buffer): string {
-  return new TextDecoder('utf-8').decode(b)
-}
-
 /**
  * The single network chokepoint. Everything that touches the PJe portal goes
  * through here so rate limiting, retries and 429 handling exist in one place.

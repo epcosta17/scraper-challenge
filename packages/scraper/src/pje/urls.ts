@@ -6,6 +6,3 @@ export const searchPageUrl = (): string => `${BASE}/ConsultaPublica/listView.sea
 export const reportPdfUrl = (idProcessoTrf: number): string =>
   `${BASE}/ConsultaPublica/DetalheProcessoConsultaPublica/reportPDF.seam` +
   `?idProcessoTrf=${idProcessoTrf}`
-
-export const detailUrl = (ca: string): string =>
-  `${BASE}/ConsultaPublica/DetalheProcessoConsultaPublica/listView.seam?ca=${ca}`

@@ -17,7 +17,12 @@ export interface StoredCase {
   summaryPdfKey: string | null
 }
 
-export type ProbeStatus = 'not_found' | 'secret' | 'error'
+// The portal answers a sealed ("segredo de justiça") case and an unassigned
+// id with the identical HTTP 200 + error.seam shape (see `fetchReportPdf`),
+// so the scraper has no way to distinguish them — every probe is recorded
+// as `not_found`. Narrowed to what is actually produced rather than
+// declaring statuses ('secret', 'error') the code can never write.
+export type ProbeStatus = 'not_found'
 
 export interface Failure {
   id: number

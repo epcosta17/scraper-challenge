@@ -223,6 +223,13 @@ stored watermark.
 | `--verbose` | Per-id progress logging during `crawl`/`daily` — no effect on `search` |
 | `--dry-run` | Plan the work without touching the network, the database, or disk |
 
+**Top-level** (stand alone, in place of a command):
+
+| Flag | Meaning |
+|---|---|
+| `--version` / `-v` | Print the installed version and exit |
+| `--help` / `-h` | Print usage and exit |
+
 ## Where output lands
 
 - **`data/pje.db`** — a SQLite database with `cases`, `documents` (schema

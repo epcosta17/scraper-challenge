@@ -171,6 +171,8 @@ export function helpText(): string {
 
 USAGE
   scraper <command> [options]
+  scraper --version | -v      Print the installed version and exit
+  scraper --help | -h         Print this message and exit
 
 COMMANDS
   search   Query the portal's own search form (faithful to the website)

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { main } from '../src/cli/run.ts'
+import { SCRAPER_VERSION } from '../src/version.ts'
 
 const realPdf = readFileSync(fileURLToPath(new URL('./fixtures/case-130100.pdf', import.meta.url)))
 
@@ -57,6 +58,25 @@ describe('main — crawl --dry-run stays off disk', () => {
     expect(code).toBe(0)
     expect(existsSync(dbPath)).toBe(false)
     expect(existsSync(`${dbPath}-wal`)).toBe(false)
+  })
+})
+
+describe('main — --version', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+  })
+
+  it('prints the version and exits 0 without touching the network', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    const code = await main(['--version'], { fetchImpl })
+
+    expect(code).toBe(0)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(logSpy).toHaveBeenCalledWith(SCRAPER_VERSION)
   })
 })
 

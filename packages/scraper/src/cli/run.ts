@@ -5,6 +5,7 @@ import { search, validateFilters, SearchValidationError } from '../pje/search.ts
 import { crawl } from '../crawl/enumerate.ts'
 import { parseArgs, helpText, validateCommandUsage, ArgsError } from './args.ts'
 import { progressLine, summaryLines, cappedWarning } from './format.ts'
+import { SCRAPER_VERSION } from '../version.ts'
 
 export interface MainOptions {
   /** Overrides the network transport — the seam tests use to prove no request went out. */
@@ -26,6 +27,11 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
   try {
     if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
       console.log(helpText())
+      return 0
+    }
+
+    if (argv[0] === '--version' || argv[0] === '-v') {
+      console.log(SCRAPER_VERSION)
       return 0
     }
 
