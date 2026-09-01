@@ -1,6 +1,20 @@
 import type { SearchFilters } from '../pje/search.ts'
 
 export type Command = 'search' | 'crawl' | 'case' | 'deep' | 'daily'
+
+/**
+ * How much a run says about itself while it works. `normal` is the default
+ * and narrates what each step is *about to do*; `verbose` adds the
+ * request-level detail underneath it (URLs, status codes, backoff);
+ * `quiet` prints nothing but the final result, for a scheduled run whose
+ * stderr nobody reads until something breaks.
+ */
+export type LogLevel = 'quiet' | 'normal' | 'verbose'
+
+export function logLevelOf(args: Pick<ParsedArgs, 'quiet' | 'verbose'>): LogLevel {
+  if (args.quiet) return 'quiet'
+  return args.verbose ? 'verbose' : 'normal'
+}
 const COMMANDS: Command[] = ['search', 'crawl', 'case', 'deep', 'daily']
 
 export class ArgsError extends Error {
@@ -22,6 +36,7 @@ export interface ParsedArgs {
   out: string
   json: boolean
   verbose: boolean
+  quiet: boolean
   dryRun: boolean
   partition: boolean
   positional: string[]
@@ -56,6 +71,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     out: 'data/pdfs',
     json: false,
     verbose: false,
+    quiet: false,
     dryRun: false,
     partition: false,
     positional: [],
@@ -111,6 +127,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--out': out.out = value(arg, i++); break
       case '--json': out.json = true; break
       case '--verbose': out.verbose = true; break
+      case '--quiet': out.quiet = true; break
       case '--dry-run': out.dryRun = true; break
       case '--partition': out.partition = true; break
       default: throw new ArgsError(`Unknown flag "${arg}".`)
@@ -131,6 +148,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
  * goes out. Exit code 2, like every other `ArgsError`.
  */
 export function validateCommandUsage(args: ParsedArgs): void {
+  // Two dials pointing opposite ways: silently letting one win would mean a
+  // cron job that thinks it asked for silence quietly getting request-level
+  // tracing, or vice versa. Neither is recoverable from the output itself.
+  if (args.quiet && args.verbose) {
+    throw new ArgsError(
+      '--quiet and --verbose are opposites: --quiet prints only the final result, ' +
+      '--verbose adds per-request detail. Pass at most one.',
+    )
+  }
+
   // A bare positional — most naturally a pasted case number, e.g.
   // `scraper search 0013201-41.2025.4.05.8202` — is silently collected and
   // then ignored by every flag parser downstream, running an unfiltered
@@ -247,7 +274,9 @@ GENERAL
   --db <path>           SQLite file (default: data/pje.db)
   --out <path>          PDF directory (default: data/pdfs)
   --json                machine-readable output
-  --verbose             per-id crawl/daily progress logging (no effect on search)
+  --verbose             add per-request detail (URLs, status codes, retries, 429
+                         backoff) on top of the default narration
+  --quiet               print only the final result — nothing on stderr
   --dry-run             plan the work without writing anything
 
 NOTE

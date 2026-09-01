@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseArgs, ArgsError, helpText, validateCommandUsage } from '../src/cli/args.ts'
+import { parseArgs, ArgsError, helpText, validateCommandUsage, logLevelOf } from '../src/cli/args.ts'
 
 describe('parseArgs', () => {
   it('parses the command and search filters', () => {
@@ -201,5 +201,29 @@ describe('validateCommandUsage', () => {
       const a = parseArgs(['deep', '130100', '130101'])
       expect(() => validateCommandUsage(a)).toThrow(ArgsError)
     })
+  })
+})
+
+describe('log level — --quiet, the default, and --verbose', () => {
+  it('parses --quiet, defaulting to false', () => {
+    expect(parseArgs(['crawl', '--quiet']).quiet).toBe(true)
+    expect(parseArgs(['crawl']).quiet).toBe(false)
+  })
+
+  it('reports the three levels from the flags actually given', () => {
+    expect(logLevelOf(parseArgs(['crawl']))).toBe('normal')
+    expect(logLevelOf(parseArgs(['crawl', '--quiet']))).toBe('quiet')
+    expect(logLevelOf(parseArgs(['crawl', '--verbose']))).toBe('verbose')
+  })
+
+  it('rejects --quiet together with --verbose rather than silently picking one', () => {
+    expect(() => validateCommandUsage(parseArgs(['crawl', '--quiet', '--verbose'])))
+      .toThrow(ArgsError)
+    expect(() => validateCommandUsage(parseArgs(['crawl', '--quiet', '--verbose'])))
+      .toThrow(/--quiet and --verbose/)
+  })
+
+  it('documents --quiet in the help text', () => {
+    expect(helpText()).toContain('--quiet')
   })
 })
