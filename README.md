@@ -144,6 +144,16 @@ else:
 npm run scraper -- daily
 ```
 
+On a fresh database — no cases stored yet, so the watermark is `0` — `daily`
+starts at id `1`. Depending on how low ids happen to be allocated, that
+either stops quickly after 50 consecutive misses (see `stopAfterMisses`) or,
+if low ids turn out to be assigned cases, begins a full crawl of the roughly
+133,000-case corpus, which at the throughput measured in *429 handling* below
+takes many hours. `daily` is meant to be run against a database that already
+has a reasonably current watermark (e.g. seeded by an initial `crawl`); on a
+genuinely empty one, run `crawl` with an explicit `--to-id` or `--limit`
+first if a full walk from id 1 isn't what's wanted.
+
 ### How resuming works
 
 `crawl` and `daily` need no session or checkpoint file to resume: the summary
@@ -151,10 +161,21 @@ PDF endpoint is stateless (see *Findings*), and the watermark is simply
 `MAX(id_processo_trf)` already in `cases`. Restarting after an interruption —
 a crash, a Ctrl-C, a scheduled run picking up where yesterday's left off — is
 just running the command again with no extra bookkeeping. Ids that failed
-non-permanently are kept in `failures` (see *429 handling* below) and are
-retried by re-running `crawl` over the same range; ids that were confirmed
-absent are kept in `probes` and are not retried, since they are an expected,
-stable outcome rather than a transient one.
+non-permanently are kept in `failures` (see *429 handling* below); retrying
+them means re-running `crawl` with an explicit `--from-id`/`--to-id` range
+that covers them — a default re-run resumes from the watermark and, since
+the watermark only advances past *stored* ids, will not revisit a lower id
+on its own. Once a previously failed id is stored successfully, its
+`failures` row is marked resolved.
+
+Ids that were confirmed absent are recorded in `probes`, but purely for
+visibility — `crawl` never consults that table to skip an id, so a re-run
+over the same range re-probes every previously-absent id again rather than
+treating the earlier miss as permanent. This is intentional, not an
+oversight: unlike a stored case, "absent" is not a stable fact about an id.
+A case can be placed under judicial secrecy after being public, or a
+previously sealed case can later become public, so treating an old miss as
+permanently settled would mean never noticing either transition.
 
 ## Flags
 
@@ -199,7 +220,7 @@ stored watermark.
 | `--db <path>` | SQLite file (default: `data/pje.db`) |
 | `--out <path>` | PDF directory (default: `data/pdfs`) |
 | `--json` | Machine-readable output |
-| `--verbose` | Per-request progress logging |
+| `--verbose` | Per-id progress logging during `crawl`/`daily` — no effect on `search` |
 | `--dry-run` | Plan the work without touching the network, the database, or disk |
 
 ## Where output lands
@@ -230,9 +251,11 @@ npm run check:runtime        # imports packages/core with Node's own TS strippin
                               #   survives type-only stripping, like parameter properties)
 ```
 
-The offline suite (109 tests) runs entirely against fixtures and never makes a
-network call — that's what makes it safe to run in CI and safe to run
-repeatedly while developing.
+The offline suite — everything `npm test` runs by default — runs entirely
+against fixtures and never makes a network call, which is what makes it safe
+to run in CI and safe to run repeatedly while developing. (Its exact test
+count drifts as the suite grows; run `npm test` for the current number
+rather than trusting a figure written down here.)
 
 `packages/scraper/tests/live.test.ts` is gated behind `PJE_LIVE=1` and hits the
 real TRF5 portal at a low rate (1 request/second). It is skipped by default so
@@ -358,13 +381,20 @@ under a proper ISO-8859-1 encoder.
 The HTTP client is the single chokepoint every request passes through, so
 rate limiting and retry policy live in one place (`packages/scraper/src/http/client.ts`).
 On a `429` response it backs off exponentially with jitter (base 1s, factor
-2, ±25% jitter, capped at 60s per attempt, up to 5 attempts total), honouring
-a server-supplied `Retry-After` header (either delay-seconds or an HTTP-date)
-in preference to the computed backoff when one is present. A request that
-exhausts every retry raises `RateLimitedError`; inside `crawl`, that surfaces
-as a recorded row in the `failures` table (kind `summary_pdf`, keyed by id)
-rather than aborting the run, so one persistently rate-limited id doesn't
-stop the crawl from covering the rest of the range — a later run retries it.
+2, ±25% jitter, up to 5 attempts total), honouring a server-supplied
+`Retry-After` header (either delay-seconds or an HTTP-date) in preference to
+the computed backoff when one is present. The delay is **capped at 60s per
+attempt** either way — the same cap bounds both the computed backoff and an
+honoured `Retry-After`, so a server sending `Retry-After: 86400` sleeps a
+worker for at most 60s, not 24 hours. A `429` also pushes every worker's next
+request out by that delay, not just the one that got rejected — otherwise
+the other `concurrency-1` workers would keep firing at full `--rate` and the
+crawl's aggregate rate would never actually drop under a real rate limit. A
+request that exhausts every retry raises `RateLimitedError`; inside `crawl`,
+that surfaces as a recorded row in the `failures` table (kind `summary_pdf`,
+keyed by id) rather than aborting the run, so one persistently rate-limited
+id doesn't stop the crawl from covering the rest of the range — a later run
+retries it.
 
 Stated honestly: a `429` was never actually reproduced while testing this
 scraper, up to 16 concurrent workers against the live `reportPDF.seam`

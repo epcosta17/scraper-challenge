@@ -207,7 +207,7 @@ GENERAL
   --db <path>           SQLite file (default: data/pje.db)
   --out <path>          PDF directory (default: data/pdfs)
   --json                machine-readable output
-  --verbose             per-request logging
+  --verbose             per-id crawl/daily progress logging (no effect on search)
   --dry-run             plan the work without writing anything
 
 NOTE
