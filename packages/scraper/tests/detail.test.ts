@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { HttpClient } from '../src/http/client.ts'
 import {
   parseDetailPage, fetchDetail, UnrecognisedDetailPageError,
+  parseProcessFields, parseParties, parseMovementsTotal,
   type BinaryDocumentRef, type HtmlDocumentRef,
 } from '../src/pje/detail.ts'
 
@@ -128,6 +129,163 @@ describe('parseDetailPage', () => {
   })
 })
 
+describe('parseProcessFields', () => {
+  it('extracts jurisdiction, courtAddress and referenceNumber from the rich fixture', () => {
+    const fields = parseProcessFields(detailWithDocs)
+    expect(fields).toEqual({
+      jurisdiction: 'TRF5',
+      courtAddress:
+        'Tribunal Regional Federal - 5ª Região, Cais do Apolo, s/n, Recife, RECIFE - PE - CEP: 50030-908',
+      referenceNumber: '0801438-34.2016.4.05.8102',
+    })
+  })
+
+  // The sparse 2026 case: same three fields, different values — proves the
+  // parser isn't accidentally keyed on anything specific to the rich case.
+  it('extracts the same three fields from the sparse fixture', () => {
+    const fields = parseProcessFields(detailHtmlOnly)
+    expect(fields).toEqual({
+      jurisdiction: 'TRF5',
+      courtAddress:
+        'Tribunal Regional Federal - 5ª Região, Cais do Apolo, s/n, Recife, RECIFE - PE - CEP: 50030-908',
+      referenceNumber: '0005425-26.2026.4.05.8308',
+    })
+  })
+
+  it('returns null fields rather than throwing when the panel is entirely absent', () => {
+    expect(parseProcessFields('<html><body>no panel here</body></html>')).toEqual({
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
+    })
+  })
+})
+
+describe('parseParties', () => {
+  it('splits each participant row into name, document, oab, role and situation (rich fixture)', () => {
+    const { parties, ativoTotal, passivoTotal } = parseParties(detailWithDocs)
+    expect(ativoTotal).toBe(2)
+    expect(passivoTotal).toBe(1)
+    expect(parties).toHaveLength(3)
+
+    expect(parties).toContainEqual({
+      polo: 'ativo',
+      name: 'CONSELHO REGIONAL DE ODONTOLOGIA DO CEARA',
+      documentType: 'cnpj',
+      documentNumber: '07.299.589/0001-10',
+      oab: null,
+      role: 'APELANTE',
+      situation: 'Ativo',
+    })
+    expect(parties).toContainEqual({
+      polo: 'ativo',
+      name: 'ALLEX KONNE DE NOGUEIRA E SOUZA',
+      documentType: 'cpf',
+      documentNumber: '640.535.983-20',
+      oab: 'CE17669-A',
+      role: 'ADVOGADO',
+      situation: 'Ativo',
+    })
+    expect(parties).toContainEqual({
+      polo: 'passivo',
+      name: 'BENJAMIM SAMPAIO FILHO',
+      documentType: 'cpf',
+      documentNumber: '102.897.124-91',
+      oab: null,
+      role: 'APELADO',
+      situation: 'Ativo',
+    })
+  })
+
+  // The sparse fixture's passivo entry embeds an abbreviation ("CREF12/PE")
+  // between the entity name and its CNPJ, joined by the same " - " a real
+  // field is — proves the parser matches known fields (CNPJ/CPF/OAB) rather
+  // than naively splitting on every dash.
+  it('keeps an embedded abbreviation as part of the name instead of misparsing it as a field (sparse fixture)', () => {
+    const { parties, ativoTotal, passivoTotal } = parseParties(detailHtmlOnly)
+    expect(ativoTotal).toBe(2)
+    expect(passivoTotal).toBe(2)
+    expect(parties).toContainEqual({
+      polo: 'passivo',
+      name: 'CONSELHO REGIONAL DE EDUCACAO FISICA DA 12 REGIAO/PERNAMBUCO - CREF12/PE',
+      documentType: 'cnpj',
+      documentNumber: '03.956.986/0001-66',
+      oab: null,
+      role: 'APELADO',
+      situation: 'Ativo',
+    })
+  })
+
+  it('returns an empty list and null totals when neither polo table is present', () => {
+    expect(parseParties('<html><body>no parties here</body></html>')).toEqual({
+      parties: [], ativoTotal: null, passivoTotal: null,
+    })
+  })
+
+  // The anti-truncation contract this whole feature exists for: a page that
+  // states more participants than it actually rendered must be detectable
+  // by comparing the parsed count against the stated total — never silently
+  // treated as a complete list. `crawl/deep.ts` is what acts on this.
+  it('lets the caller detect truncation by disagreeing with the stated total', () => {
+    const patched = detailWithDocs.replace('2 resultados encontrados', '5 resultados encontrados')
+    const { parties, ativoTotal } = parseParties(patched)
+    const ativoParsed = parties.filter((p) => p.polo === 'ativo').length
+    expect(ativoTotal).toBe(5)
+    expect(ativoParsed).toBe(2)
+    expect(ativoParsed).not.toBe(ativoTotal)
+  })
+
+  // Found live (case 0800245-51.2020.4.05.8002): a participant row can carry
+  // a trailing `<ul class="tree">` of real, non-empty auxiliary text — here
+  // a "Procuradoria" line naming the representing office — not just the
+  // always-empty "Defensoria" marker both fixtures happen to show. Left in,
+  // that text lands after the role's closing paren and breaks the
+  // trailing-`(...)`-is-the-role assumption entirely (verified: before this
+  // fix, `role` came back `null` for this exact row). The whole `<ul>` must
+  // be stripped regardless of what it contains, not just when it's empty.
+  it('strips a non-empty auxiliary annotation (e.g. a representing office) instead of letting it swallow the role', () => {
+    const html = `
+      <table id="x:processoPartesPoloPassivoResumidoList"><tbody><tr>
+        <td><span id="j_id146:processoPartesPoloPassivoResumidoList:0:j_id361">
+          <div class="col-sm-12 "><span class="text-bold">MINISTÉRIO PÚBLICO FEDERAL - CNPJ: 03.636.198/0001-92 (APELADO)</span>
+            <div class="col-sm-12 "></div>
+            <style type="text/css">.none { list-style-type: none; }</style>
+            <ul class="tree">
+              <li>
+                <small class="text-muted"><img src="" class="fa fa-users mr-10">
+                  <span title="Procuradoria">PROCURADORIA MINISTÉRIO PÚBLICO FEDERAL</span>
+                </small>
+              </li>
+            </ul>
+          </div></span></td>
+        <td><div class="col-sm-12">Ativo</div></td>
+      </tr></tbody></table><span class="pull-right text-muted">1 resultados encontrados</span>
+    `
+    const { parties } = parseParties(html)
+    expect(parties).toEqual([{
+      polo: 'passivo',
+      name: 'MINISTÉRIO PÚBLICO FEDERAL',
+      documentType: 'cnpj',
+      documentNumber: '03.636.198/0001-92',
+      oab: null,
+      role: 'APELADO',
+      situation: 'Ativo',
+    }])
+  })
+})
+
+describe('parseMovementsTotal', () => {
+  it('reads the stated total without parsing any rows (rich fixture)', () => {
+    expect(parseMovementsTotal(detailWithDocs)).toBe(5)
+  })
+
+  it('reads the stated total for the sparse fixture too', () => {
+    expect(parseMovementsTotal(detailHtmlOnly)).toBe(7)
+  })
+
+  it('returns null when the table is absent', () => {
+    expect(parseMovementsTotal('<html><body>no movements here</body></html>')).toBeNull()
+  })
+})
+
 describe('fetchDetail', () => {
   it('classifies a real case page (with documents) as valid', async () => {
     const res = await fetchDetail(clientReturning(detailWithDocs), 'ca'.repeat(24))
@@ -139,6 +297,17 @@ describe('fetchDetail', () => {
     const res = await fetchDetail(clientReturning(detailHtmlOnly), 'ca'.repeat(24))
     expect(res.kind).toBe('valid')
     if (res.kind === 'valid') expect(res.documents).toHaveLength(2)
+  })
+
+  it('carries process fields, parties and the movements total alongside the documents', async () => {
+    const res = await fetchDetail(clientReturning(detailWithDocs), 'ca'.repeat(24))
+    expect(res.kind).toBe('valid')
+    if (res.kind !== 'valid') return
+    expect(res.processFields.jurisdiction).toBe('TRF5')
+    expect(res.parties).toHaveLength(3)
+    expect(res.partiesAtivoTotal).toBe(2)
+    expect(res.partiesPassivoTotal).toBe(1)
+    expect(res.movementsTotal).toBe(5)
   })
 
   // Captured live: a `ca` of 48 `a`s produces a 200 response with the same
