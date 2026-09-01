@@ -2,9 +2,16 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
-import { extractTextStreams, reconstructText, parseCaseRecord } from '../src/pdf/parse.ts'
+import { extractTextStreams, reconstructText, parseCaseRecord, parseMovements } from '../src/pdf/parse.ts'
 
 const pdf = readFileSync(fileURLToPath(new URL('./fixtures/case-130100.pdf', import.meta.url)))
+// Captured live from 0800245-51.2020.4.05.8002 (idProcessoTrf 54225) — the
+// case that surfaced the detail page's movements table silently truncating
+// at 15 of a stated 39 rows, with no pagination control at all. Its summary
+// PDF, by contrast, prints the whole 39-entry log across three report pages
+// — this fixture is what proves `parseMovements` recovers all of them,
+// including across the page-break boilerplate in between.
+const pdfWithPagedMovements = readFileSync(fileURLToPath(new URL('./fixtures/case-54225.pdf', import.meta.url)))
 
 describe('extractTextStreams', () => {
   it('finds text streams beyond the first stream in the file', () => {
@@ -137,5 +144,52 @@ describe('parseCaseRecord', () => {
 
   it('throws a typed error when the buffer is not a PDF', () => {
     expect(() => parseCaseRecord(Buffer.from('<html>error</html>'))).toThrow(/not a PDF/i)
+  })
+})
+
+describe('parseMovements', () => {
+  it('parses every entry from a single-page log, in the page\'s own order', () => {
+    const movements = parseMovements(pdf)
+    expect(movements).toHaveLength(10)
+    expect(movements[0]).toEqual({
+      position: 0, timestamp: '27/08/2026 00:08:06', description: 'Publicado Decisão em 27/08/2026.',
+    })
+    expect(movements.at(-1)).toEqual({
+      position: 9, timestamp: '17/08/2026 14:56:43', description: 'Distribuído por sorteio',
+    })
+    // Ordering is preserved verbatim, not re-sorted by timestamp — two
+    // consecutive entries share the exact same timestamp in this log.
+    expect(movements.map((m) => m.position)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  })
+
+  // The load-bearing case: a 3-page report whose log is interrupted twice by
+  // page-break boilerplate — once by a bare "Data de atualização Movimento"
+  // column-header repeat, once by a "Visualizado/Impresso em:<timestamp>"
+  // stamp whose own timestamp would otherwise be misread as a 40th, bogus
+  // entry (a naive extractor found exactly that — 40, not 39). The detail
+  // page's own stated total for this same case is 39 (see
+  // `detail.test.ts`'s live-derived fixtures), which is what this asserts
+  // against, not just a round number.
+  it('recovers the complete log across page-break boilerplate, matching the detail page\'s own stated total', () => {
+    const movements = parseMovements(pdfWithPagedMovements)
+    expect(movements).toHaveLength(39)
+    expect(movements[0]).toMatchObject({
+      position: 0, timestamp: '11/06/2026 11:23:11',
+      description: 'Remetidos os Autos (por julgamento definitivo do recurso) para 1º GRAU',
+    })
+    expect(movements.at(-1)).toMatchObject({
+      position: 38, timestamp: '08/01/2026 11:08:53', description: 'Distribuído por sorteio',
+    })
+    // Neither page-break artifact survives into any description: no stray
+    // "Visualizado/Impresso" stamp, and no bare page-number digit leaking in
+    // from the column-header repeat.
+    for (const m of movements) {
+      expect(m.description).not.toContain('Visualizado')
+      expect(m.description).not.toMatch(/^\d{1,2}$/)
+    }
+  })
+
+  it('returns an empty list rather than throwing when the section header is absent', () => {
+    expect(parseMovements(Buffer.from('%PDF-1.4\nno movements section here'))).toEqual([])
   })
 })

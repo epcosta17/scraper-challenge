@@ -1,3 +1,4 @@
+import type { MovementInput } from '@pje/core'
 import { extractTextStreams } from './streams.ts'
 
 export { extractTextStreams }
@@ -94,10 +95,21 @@ function field(text: string, label: string): string | null {
   return re.exec(text)?.[1]?.trim() ?? null
 }
 
-export function parseCaseRecord(pdf: Buffer): CaseRecord {
+/**
+ * The whole-document text step `parseCaseRecord` builds on, exported so
+ * other callers (`crawl/deep.ts`, for a binary document's `text_content`)
+ * can reuse the same extraction — walk every stream, keep the ones with
+ * `Tj`/`TJ` operators, reconstruct with word boundaries — rather than
+ * duplicating it or reimplementing case-summary-specific field parsing for
+ * a document that has none.
+ */
+export function extractPdfText(pdf: Buffer): string {
   if (pdf.subarray(0, 5).toString('latin1') !== '%PDF-') throw new NotAPdfError()
+  return reconstructText(extractTextStreams(pdf))
+}
 
-  const text = reconstructText(extractTextStreams(pdf))
+export function parseCaseRecord(pdf: Buffer): CaseRecord {
+  const text = extractPdfText(pdf)
 
   const number = /(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})/.exec(text)?.[1]
   if (!number) throw new Error('Could not locate a case number in the PDF text')
@@ -120,4 +132,63 @@ export function parseCaseRecord(pdf: Buffer): CaseRecord {
     distributedAt: field(text, 'Data de distribuição'),
     subjects,
   }
+}
+
+// The section header the template prints right before the "Data de
+// atualização | Movimento" column headings and the entries themselves.
+const MOVEMENT_SECTION_HEADER = 'Movimentação do Processo'
+
+// Two boilerplate fragments the template reprints once per PDF page the log
+// spans: the column heading itself (whenever a new page starts a fresh
+// table — see case 0800245-51.2020.4.05.8002, a 3-page report), and, when
+// the PDF was generated after being viewed once already, a
+// "Visualizado/Impresso em:<timestamp>" stamp whose own timestamp would
+// otherwise be misread as an extra, bogus movement (found live: without
+// stripping it first, this case's log parsed to 40 entries instead of the
+// true 39 the detail page's own count agrees with). Either fragment may be
+// preceded by a bare page-number run the reconstructed text has no other
+// delimiter for; swallowing it here is the only way to keep it out of the
+// *previous* entry's description.
+const VIEWED_STAMP_RE = /\d{0,4}\s*Visualizado\/Impresso em:\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/g
+const COLUMN_HEADER_RE = /\d{0,4}\s*Data de atualização Movimento/g
+
+const MOVEMENT_TIMESTAMP_RE = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/g
+
+/**
+ * Parses the procedural log from the case's own summary PDF — deliberately
+ * NOT from the case detail HTML page, even though that page also renders a
+ * "Movimentações do Processo" table.
+ *
+ * Found live: that HTML table is capped by the portal with no pagination
+ * control at all (case 0800245-51.2020.4.05.8002 showed 15 rows of a
+ * stated 39 — see `pje/detail.ts`'s `parseMovementsTotal`). The PDF, by
+ * contrast, prints the log in full across as many report pages as it takes,
+ * with no cap observed. Do not "fix" this back to reading the richer-
+ * looking HTML table without re-verifying that live case first — doing so
+ * would silently drop most of a long case's history.
+ *
+ * Every entry in the reconstructed text is a bare
+ * `<timestamp> <description>` pair with no other delimiter between them
+ * (there is no literal " - " here, unlike the HTML's row text), so entries
+ * are split purely on where a timestamp-shaped run of text occurs, after
+ * stripping the two known boilerplate fragments (see the regexes above)
+ * that would otherwise be misread as extra entries or bleed into a real
+ * one's description.
+ */
+export function parseMovements(pdf: Buffer): MovementInput[] {
+  const text = extractPdfText(pdf)
+  const headerIdx = text.indexOf(MOVEMENT_SECTION_HEADER)
+  if (headerIdx === -1) return []
+
+  const section = text
+    .slice(headerIdx + MOVEMENT_SECTION_HEADER.length)
+    .replace(VIEWED_STAMP_RE, ' ')
+    .replace(COLUMN_HEADER_RE, ' ')
+
+  const matches = [...section.matchAll(MOVEMENT_TIMESTAMP_RE)]
+  return matches.map((m, i) => {
+    const start = m.index + m[0].length
+    const end = i + 1 < matches.length ? matches[i + 1]!.index : section.length
+    return { position: i, timestamp: m[0], description: section.slice(start, end).replace(/\s+/g, ' ').trim() }
+  })
 }
