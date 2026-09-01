@@ -6,12 +6,22 @@ import { extractTextStreams, reconstructText, parseCaseRecord, parseMovements } 
 
 const pdf = readFileSync(fileURLToPath(new URL('./fixtures/case-130100.pdf', import.meta.url)))
 // Captured live from 0800245-51.2020.4.05.8002 (idProcessoTrf 54225) — the
-// case that surfaced the detail page's movements table silently truncating
-// at 15 of a stated 39 rows, with no pagination control at all. Its summary
-// PDF, by contrast, prints the whole 39-entry log across three report pages
-// — this fixture is what proves `parseMovements` recovers all of them,
-// including across the page-break boilerplate in between.
+// case that surfaced the detail page's movements table rendering only its
+// first page (15 of a stated 39; it CAN be paged, via a slider — see
+// `pje/detail.ts`'s `parseMovementsTotal` — but the PDF is read instead, at
+// no extra request). Its summary PDF prints the whole 39-entry log across
+// three report pages — this fixture is what proves `parseMovements`
+// recovers all of them, including across the page-break boilerplate in
+// between.
 const pdfWithPagedMovements = readFileSync(fileURLToPath(new URL('./fixtures/case-54225.pdf', import.meta.url)))
+// Captured live from 0024885-29.2005.4.05.0000 (idProcessoTrf 28907) — a
+// 157-movement log where several real entries embed a second, self-
+// referential timestamp in their own description ("Disponibilizado no DJ
+// Eletrônico em <date> <time>"), in the exact shape an entry's own leading
+// timestamp has. This is what proves `parseMovements` doesn't misread that
+// embedded timestamp as a second, bogus entry (see the regression test
+// below).
+const pdfWithEmbeddedTimestamps = readFileSync(fileURLToPath(new URL('./fixtures/case-28907.pdf', import.meta.url)))
 
 describe('extractTextStreams', () => {
   it('finds text streams beyond the first stream in the file', () => {
@@ -191,5 +201,30 @@ describe('parseMovements', () => {
 
   it('returns an empty list rather than throwing when the section header is absent', () => {
     expect(parseMovements(Buffer.from('%PDF-1.4\nno movements section here'))).toEqual([])
+  })
+
+  // Found live (case 0024885-29.2005.4.05.0000): several real entries embed
+  // a second, self-referential `DD/MM/YYYY HH:MM:SS` timestamp in their own
+  // description — "Disponibilizado no DJ Eletrônico em 05/03/2020 03:12:14"
+  // is itself the description of the entry timestamped 05/03/2020 03:12:14,
+  // not two entries. A naive split on every timestamp-shaped match misread
+  // each one as an extra, bogus entry with an empty (or punctuation-only)
+  // description — 166 matches where the detail page's own stated total, and
+  // the true count, is 157. The fix excludes a timestamp preceded by "em "
+  // from ever starting a new entry, since only an embedded, self-referential
+  // one is ever introduced that way — a real entry boundary never is.
+  it('does not split a real entry in two when its own description embeds a second timestamp', () => {
+    const movements = parseMovements(pdfWithEmbeddedTimestamps)
+    expect(movements).toHaveLength(157)
+    // No entry has an empty or punctuation-only description — the exact
+    // symptom the 9 phantom entries had.
+    for (const m of movements) expect(m.description.replace(/[.\s]/g, '').length).toBeGreaterThan(0)
+    // Position stays contiguous — no gaps left behind by the fix.
+    expect(movements.map((m) => m.position)).toEqual(Array.from({ length: 157 }, (_, i) => i))
+    // The specific real entry that used to get split in two comes back
+    // whole, with the embedded timestamp intact as part of its description.
+    expect(movements.find((m) => m.timestamp === '05/03/2020 03:12:14')).toMatchObject({
+      description: 'Disponibilizado no DJ Eletrônico em 05/03/2020 03:12:14',
+    })
   })
 })

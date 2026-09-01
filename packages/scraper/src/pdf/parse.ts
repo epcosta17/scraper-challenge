@@ -152,7 +152,23 @@ const MOVEMENT_SECTION_HEADER = 'Movimentação do Processo'
 const VIEWED_STAMP_RE = /\d{0,4}\s*Visualizado\/Impresso em:\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/g
 const COLUMN_HEADER_RE = /\d{0,4}\s*Data de atualização Movimento/g
 
-const MOVEMENT_TIMESTAMP_RE = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/g
+// Found live (case 0024885-29.2005.4.05.0000, idProcessoTrf 28907, a
+// 157-movement log): a real movement's own description can embed a SECOND
+// timestamp of its own, in the exact same `DD/MM/YYYY HH:MM:SS` shape as an
+// entry's leading one — "Disponibilizado no DJ Eletrônico em
+// 05/03/2020 03:12:14" and "Publicado Decisão em 07/05/2015 03:13:22." are
+// real entries, and both self-report the very timestamp they publish at.
+// Splitting on every such match therefore misread each one as *two*
+// entries: the real one, truncated, plus a bogus second "entry" for the
+// embedded timestamp whose slice up to the next real entry was empty or
+// punctuation-only ("", "."). Naively dropping empty-description output
+// rows would have hidden the symptom without fixing the cause (and could
+// still occasionally swallow a real, if terse, movement); excluding a
+// timestamp preceded by "em " from ever being read as an entry boundary in
+// the first place is the actual fix — confirmed against this case: 166
+// naive matches, 157 once "em "-preceded ones are excluded, exactly
+// matching the detail page's own stated total.
+const MOVEMENT_TIMESTAMP_RE = /(?<!em )\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/g
 
 /**
  * Parses the procedural log from the case's own summary PDF — deliberately
