@@ -113,11 +113,89 @@ every id looks different from a clean run in its exit code, not just in a
 log line nobody is watching. `search` and `--dry-run` runs are unaffected;
 they exit `0` on success and `2` on a rejected argument, as before.
 
-### `case` and `deep` — phase 2, not implemented yet
+### `deep` — fetch a case and download every document in its file
 
-Both commands parse and validate their arguments but then exit with **status
-code 2** and an explanatory message, rather than silently doing nothing or
-pretending to work:
+Where `crawl` stops at the summary PDF, `deep` follows the whole chain to
+the individual documents that make up a case's file:
+
+```
+idProcessoTrf --(reportPDF)--> summary PDF --(parse)--> case number
+              --(search by number)--> ca
+              --(detail page by ca)--> document list
+              --(download each)--> the documents
+```
+
+The search bridge exists because the detail page only ever accepts `ca` — a
+token the search results page and only the search results page hands out; the
+detail page rejects the internal id outright, and `ca` cannot be derived, only
+harvested. `deep` accepts either a single target or an explicit id range —
+exactly one of the two, never both, never neither:
+
+```bash
+npm run scraper -- deep 0013201-41.2025.4.05.8202     # by case number
+npm run scraper -- deep 130100                        # by internal id
+npm run scraper -- deep --from-id 130100 --to-id 130120
+```
+
+A bare-digits argument is treated as the internal `idProcessoTrf`; anything
+else is treated as a case number and resolved through the search bridge. For
+a single target:
+
+```
+Case 0801438-34.2016.4.05.8102 (id 130100):
+  Documents stored:  10
+  Documents skipped: 0   (already downloaded)
+  Documents failed:  0   (recorded in the failures table for retry)
+```
+
+For a range, the summary aggregates across every case:
+
+```
+Cases done:        20
+Cases failed:       0   (recorded in the failures table for retry)
+Documents stored:   142
+Documents skipped:  0   (already downloaded)
+Documents failed:   1   (recorded in the failures table for retry)
+```
+
+**Cost:** roughly **11 requests per case** — 1 summary PDF + 1 search (skipped
+whenever a still-valid `ca` is already on file, see below) + 1 detail page +
+~9 documents, based on the case used to build this feature. A single failed
+document does not abort the case, and a single failed case does not abort a
+range — both are recorded in `failures` (kind `deep_case` or `document`) and
+the run continues. `--verbose` logs per-document progress as it happens;
+`--dry-run` prints the plan without touching the network, the database, or
+disk, exactly like `crawl`.
+
+**Documents come in two shapes.** Binary documents (PDFs) are plain download
+links and work cold, with no session required; each is written to
+`<year>/<case-number>/documents/<date>-<type>-<id>.pdf` next to the case's own
+summary PDF. HTML documents (the text of a judicial act, rendered inline
+rather than as a file) carry a *second*, session-bound `ca` that only
+resolves with the same cookie jar that fetched the detail page — their
+content is stored directly in the `documents` table (`text_content`) rather
+than as a separate file, since there's no blob worth writing. A recent case
+can legitimately have zero binary documents (verified live: a 2026 case had 2
+HTML documents and 0 binary ones), so that outcome is not treated as an
+error. A document already downloaded in a previous run is skipped without a
+request, which is what makes re-running `deep` over the same target or range
+cheap.
+
+**`ca` is a cache, not a fact.** It is stable within a time window but expires
+after some hours (verified live: a `ca` captured 14 hours earlier no longer
+worked). `deep` reuses whatever `ca` is already stored for a case and only
+falls back to the search bridge — re-deriving `ca` and updating the stored
+value — when the detail page itself reports that the cached one is stale.
+There is no separate expiry timestamp to track: the detail page's own
+response is the check, and it can't go out of date the way a cached
+timestamp could.
+
+### `case` — phase 2, not implemented yet
+
+`case` (fetch one case's stored data by number or internal id, without
+touching its documents) parses and validates its arguments but then exits
+with **status code 2** and an explanatory message, rather than silently doing
+nothing or pretending to work:
 
 ```bash
 npm run scraper -- case --number 0013201-41.2025.4.05.8202
@@ -127,10 +205,6 @@ npm run scraper -- case --number 0013201-41.2025.4.05.8202
 Command "case" is a phase-2 feature and is not implemented yet. Use 'search'
 to find a case, or 'crawl' to enumerate cases and download summary PDFs.
 ```
-
-`case` (fetch one case by number or internal id) and `deep` (fetch a case and
-download every individual document in its file, not just the summary PDF) are
-scoped for phase 2 — see *Scope* below for why.
 
 ### `daily` — advance the watermark
 
@@ -232,12 +306,26 @@ stored watermark.
 
 ## Where output lands
 
-- **`data/pje.db`** — a SQLite database with `cases`, `documents` (schema
-  reserved for phase 2), `probes` (confirmed-absent ids), and `failures`
-  (retryable errors).
-- **`data/pdfs/`** — one summary PDF per case, keyed descriptively and
-  collision-free as `<filing-year>/<case-number>/summary.pdf`, e.g.
-  `data/pdfs/2026/0013475-36.2026.4.05.0000/summary.pdf`.
+- **`data/pje.db`** — a SQLite database with `cases`, `documents` (one row per
+  document `deep` has downloaded — a binary document's `pdf_key` into the
+  blob store, or an HTML document's content directly in `text_content`),
+  `probes` (confirmed-absent ids), and `failures` (retryable errors).
+- **`data/pdfs/`** — one summary PDF per case at
+  `<filing-year>/<case-number>/summary.pdf`, and, once `deep` has run for
+  that case, its binary documents alongside it at
+  `<filing-year>/<case-number>/documents/<date>-<type>-<id>.pdf`, e.g.
+
+  ```
+  data/pdfs/2016/0801438-34.2016.4.05.8102/
+    summary.pdf
+    documents/
+      24-07-2025_20-30-45-Despacho-12284583.pdf
+      03-06-2022_12-15-47-Despacho-12284566.pdf
+      ...
+  ```
+
+  HTML documents have no file here — their content lives only in the
+  database (see above).
 
 Both paths are created on demand under the current working directory and can
 be overridden with `--db`/`--out` — including every parent directory, so
@@ -430,20 +518,23 @@ Two workspace packages, dependencies pointing one way (`scraper` depends on
 - **`packages/scraper`** — everything that talks to the portal and to the
   user. The rate-limited/retrying HTTP client and cookie jar
   (`src/http/`), the PJe protocol client — session bootstrap, search payload
-  building, response parsing (`src/pje/`) — the PDF parser
-  (`src/pdf/`), the id-enumeration crawl engine (`src/crawl/`), and the CLI
-  itself (`src/cli/`).
+  building, response parsing, case detail parsing, document download
+  (`src/pje/`) — the PDF parser (`src/pdf/`), the id-enumeration crawl engine
+  and the deep (case-to-documents) engine (`src/crawl/`), and the CLI itself
+  (`src/cli/`).
 
 ## Scope
 
-This is phase 1: the crawl engine and the CLI surface. It covers every case
-via `idProcessoTrf` enumeration and stores each case's summary PDF plus the
-structured data parsed out of it (number, class, court, panel, distribution
-date, subjects). Downloading each individual document within a case's file
-(`case`/`deep`, and the search-side `--partition`) is phase 2 — the `documents`
-table is already reserved in the schema for it, but the routes that populate
-it are not implemented, and both commands say so explicitly rather than
-pretending to work (exit code 2).
+Phase 1 built the crawl engine and the CLI surface: every case reachable via
+`idProcessoTrf` enumeration, each with its summary PDF and the structured
+data parsed out of it (number, class, court, panel, distribution date,
+subjects). Phase 2 added `deep`: the chain from a case to the PDFs (and HTML
+documents) of every document in its file — see *`deep`* above for the chain,
+the two document shapes, and the `ca`-expiry handling. `case` (fetch one
+case's already-stored data by number or internal id, with no network calls)
+remains unimplemented and still exits 2 rather than pretending to work, as
+does the search-side `--partition` (automatic subdivision of a capped
+30-result search).
 
 The corpus is roughly 133,000 cases by `idProcessoTrf`. At the sustainable
 throughput measured above (a few requests/second) a full crawl takes many
