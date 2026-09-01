@@ -70,6 +70,27 @@ describe('HttpClient', () => {
     expect((await c2.request('https://example.test/b')).status).toBe(404)
     expect(missing.count).toBe(1)
   })
+
+  it('paces concurrent requests at the configured rate', async () => {
+    const waits: number[] = []
+    const f = stubFetch([{ status: 200, body: 'ok' }])
+    const client = new HttpClient({
+      fetchImpl: f.impl,
+      rps: 10,                                  // 100 ms interval
+      sleep: async (ms) => { waits.push(ms) },
+    })
+    await Promise.all([1, 2, 3, 4].map(() => client.request('https://example.test/x')))
+    // First concurrent caller goes immediately (wait=0, doesn't sleep).
+    // Subsequent callers queue with successive intervals: 100ms, 200ms, 300ms.
+    expect(waits).toHaveLength(3)
+    for (let i = 0; i < waits.length; i++) {
+      expect(waits[i]).toBeGreaterThan(waits[i - 1] ?? -1)
+    }
+    expect(waits[0]).toBeGreaterThanOrEqual(90)     // ~100 ms, with clock tolerance
+    expect(waits[0]).toBeLessThanOrEqual(110)
+    expect(waits[2]).toBeGreaterThanOrEqual(290)    // ~300 ms, with clock tolerance
+    expect(waits[2]).toBeLessThanOrEqual(310)
+  })
 })
 
 describe('decodeLatin1', () => {
