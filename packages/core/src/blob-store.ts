@@ -9,7 +9,11 @@ export interface BlobStore {
 }
 
 export class FsBlobStore implements BlobStore {
-  constructor(private readonly root: string) {}
+  private readonly root: string
+
+  constructor(root: string) {
+    this.root = root
+  }
 
   private path(key: string): string {
     const resolvedRoot = resolve(this.root)

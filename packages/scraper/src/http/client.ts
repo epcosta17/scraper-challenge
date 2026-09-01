@@ -20,9 +20,12 @@ export interface HttpClientOptions {
 }
 
 export class RateLimitedError extends Error {
-  constructor(url: string, readonly attempts: number) {
+  readonly attempts: number
+
+  constructor(url: string, attempts: number) {
     super(`Rate limited by the server after ${attempts} attempts: ${url}`)
     this.name = 'RateLimitedError'
+    this.attempts = attempts
   }
 }
 

@@ -2,15 +2,17 @@ import type { Db } from '../db.ts'
 import type { StoredCase, Party } from '../types.ts'
 
 export class DuplicateCaseNumberError extends Error {
-  constructor(
-    readonly number: string,
-    readonly idProcessoTrf: number,
-  ) {
+  readonly number: string
+  readonly idProcessoTrf: number
+
+  constructor(number: string, idProcessoTrf: number) {
     super(
       `Case number ${number} is already stored under a different id_processo_trf ` +
         `(attempted with id_processo_trf ${idProcessoTrf})`,
     )
     this.name = 'DuplicateCaseNumberError'
+    this.number = number
+    this.idProcessoTrf = idProcessoTrf
   }
 }
 

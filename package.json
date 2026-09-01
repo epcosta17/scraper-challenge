@@ -9,7 +9,8 @@
     "build": "tsc --build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "scraper": "node --experimental-strip-types packages/scraper/src/cli.ts"
+    "scraper": "node --experimental-strip-types packages/scraper/src/cli.ts",
+    "check:runtime": "node --experimental-strip-types -e \"import('./packages/core/src/index.ts').then(()=>console.log('runtime import OK'))\""
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
