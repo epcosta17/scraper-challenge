@@ -77,39 +77,35 @@ describe('parseDetailPage', () => {
 
   // Captured live from case 0013478-88.2026.4.05.0000: its timeline has five
   // "view movement" triggers that reuse the exact same documentoSemLoginHTML.seam
-  // endpoint and ca-shape as the one real document on the page (a real,
-  // fetchable document — verified live, see download.test.ts's fixtures),
-  // but never carry idProcessoDoc — that param belongs to the document, not
-  // the movement. They're kept, not dropped: each gets a synthetic id
-  // derived from the case number and its own label, since the trigger's own
-  // `ca` is too short-lived (changes on every re-fetch, live-verified) to
-  // key a resumable download on.
-  it('gives a timeline "view movement" trigger with no idProcessoDoc a synthetic id, keeping the real document too', () => {
+  // endpoint and ca-shape as the one real document on the page, but never
+  // carry idProcessoDoc — that param belongs to the document, not the
+  // movement. `movimentações ≠ documentos`: verified live (cases 130104 and
+  // 130109), such a trigger only ever re-fetches an act already on the page
+  // under its real id, or a page with no act on it at all — never a
+  // document this page doesn't already list. They're dropped during
+  // parsing, not kept under a synthetic id.
+  it('drops every timeline "view movement" trigger, keeping only the one real document', () => {
     const docs = parseDetailPage(detailWithMovementPopups)
-    // 1 real document (idProcessoDoc=12114281) + 5 timeline triggers.
-    expect(docs).toHaveLength(6)
+    // 1 real document (idProcessoDoc=12114281) + 5 timeline triggers that
+    // must all be gone, not just deduplicated.
+    expect(docs).toHaveLength(1)
 
-    const real = docs.find((d) => d.kind === 'html' && d.idProcessoDoc === 12114281)
-    expect(real).toBeDefined()
-
-    const synthetic = docs.filter((d): d is HtmlDocumentRef => d.kind === 'html' && d.idProcessoDoc === null)
-    expect(synthetic).toHaveLength(5)
-    for (const d of synthetic) {
-      // Clear of any real idProcessoDocumento observed in the wild (a few
-      // million) so a synthetic and a real id can never collide.
-      expect(d.id).toBeGreaterThan(1_000_000_000_000)
-    }
-    // The five triggers carry only two distinct labels (the timeline
-    // references the same underlying acts from multiple movements), and
-    // the synthetic id is derived from the label — so they collapse to two
-    // distinct ids, not five, without any dedup logic in the parser itself.
-    expect(new Set(synthetic.map((d) => d.id)).size).toBe(2)
+    const [only] = docs
+    expect(only).toMatchObject({ kind: 'html', id: 12114281, idProcessoDoc: 12114281 })
   })
 
-  it('derives the same synthetic id for the same case+label every time — a stable key across re-fetches', () => {
-    const a = parseDetailPage(detailWithMovementPopups).map((d) => d.id)
-    const b = parseDetailPage(detailWithMovementPopups).map((d) => d.id)
-    expect(a).toEqual(b)
+  it('a timeline trigger with no idProcessoDoc produces no document at all', () => {
+    const docs = parseDetailPage(detailWithMovementPopups)
+    expect(docs.some((d) => d.kind === 'html' && d.idProcessoDoc === null)).toBe(false)
+    // No synthetic ids (the old, now-removed behaviour) survive either.
+    expect(docs.every((d) => d.id < 1_000_000_000_000)).toBe(true)
+  })
+
+  it('an HTML trigger WITH an idProcessoDoc still produces one document, under its real id', () => {
+    const docs = parseDetailPage(detailWithMovementPopups)
+    const html = docs.filter((d): d is HtmlDocumentRef => d.kind === 'html')
+    expect(html).toHaveLength(1)
+    expect(html[0]!.idProcessoDoc).toBe(12114281)
   })
 
   // Finding from a live range run: one malformed row (a binary link missing

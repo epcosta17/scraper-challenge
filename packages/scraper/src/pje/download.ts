@@ -63,9 +63,12 @@ export function filenameFromContentDisposition(headers: Headers): string | null 
  * fetched the detail page `ref.ca` was harvested from — it is a
  * session-bound token, unlike the case's own `ca`, and will not resolve
  * under a different session. The returned text is the extracted act, not
- * the raw page — see `extractActText`. `ref.idProcessoDoc` is passed through
- * as-is, `null` included: see `documentHtmlUrl` for why a placeholder there
- * would break the fetch instead of merely being ignored.
+ * the raw page — see `extractActText`. `ref.idProcessoDoc` is always a real
+ * id by the time it reaches here — a trigger with none is a timeline
+ * reference, not a document, and never becomes an `HtmlDocumentRef` at all
+ * (see `parseDetailPage`) — but `documentHtmlUrl` still accepts (and
+ * correctly omits) a `null` one, since that endpoint contract is worth
+ * keeping documented and tested on its own.
  *
  * Takes only the two real variants — a `MalformedDocumentRef` (see
  * `detail.ts`) is never fetched at all; the caller (`crawl/deep.ts`) records

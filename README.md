@@ -210,6 +210,14 @@ error. A document already downloaded in a previous run is skipped without a
 request, which is what makes re-running `deep` over the same target or range
 cheap.
 
+**Movimentações ≠ documentos.** A case's own procedural-movement timeline
+links to acts through the same endpoint an HTML document uses, but never
+carries that endpoint's `idProcessoDoc` parameter — verified live, such a
+timeline link only ever re-fetches an act already listed as a real document
+on the same page, or a page with no act on it at all. These links are not
+documents and are never stored as one; only a trigger that carries a real
+`idProcessoDoc` becomes a row in `documents`.
+
 **`ca` is a cache, not a fact.** It is stable within a time window but expires
 after some hours (verified live: a `ca` captured 14 hours earlier no longer
 worked). `deep` reuses whatever `ca` is already stored for a case and only

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { HttpClient } from '../src/http/client.ts'
 import { downloadDocument, filenameFromContentDisposition, extractActText } from '../src/pje/download.ts'
+import { documentHtmlUrl } from '../src/pje/urls.ts'
 import type { BinaryDocumentRef, HtmlDocumentRef } from '../src/pje/detail.ts'
 
 const samplePdf = readFileSync(fileURLToPath(new URL('./fixtures/sample-document.pdf', import.meta.url)))
@@ -126,24 +127,25 @@ describe('downloadDocument — html', () => {
     }
   })
 
-  // A case's procedural-movement timeline links to a document this same
-  // way but with no idProcessoDoc at all (see detail.test.ts) — verified
-  // live that appending any value for it, even a placeholder, breaks the
-  // fetch outright. The request URL must omit the param entirely, not send
-  // some synthetic stand-in.
-  it('omits idProcessoDoc from the request URL when the ref carries none', async () => {
-    let requestedUrl = ''
-    const fetchImpl = (async (url: string | URL) => {
-      requestedUrl = String(url)
-      const r = new Response(Buffer.from(despachoPage, 'latin1'), { status: 200 })
-      Object.defineProperty(r, 'url', { value: String(url) })
-      return r
-    }) as unknown as typeof fetch
-    const client = new HttpClient({ fetchImpl, sleep: async () => {}, rps: 0 })
+})
 
-    await downloadDocument(client, { ...htmlRef, idProcessoDoc: null })
+// A case's procedural-movement timeline links to a document through this
+// same endpoint but with no idProcessoDoc at all — verified live that
+// appending any value for it, even a placeholder, breaks the fetch outright.
+// Such a trigger is now dropped during parsing rather than ever becoming an
+// `HtmlDocumentRef` (see detail.test.ts), so this is `documentHtmlUrl`'s own
+// contract, tested directly rather than through `downloadDocument` — it
+// remains worth protecting on its own, and is exactly what `downloadDocument`
+// would rely on if that ever changed.
+describe('documentHtmlUrl — the endpoint contract behind downloadDocument', () => {
+  it('omits idProcessoDoc from the URL entirely when given none, rather than a placeholder', () => {
+    const url = documentHtmlUrl(htmlRef.ca, null)
+    expect(url).toContain(`ca=${htmlRef.ca}`)
+    expect(url).not.toContain('idProcessoDoc')
+  })
 
-    expect(requestedUrl).toContain(`ca=${htmlRef.ca}`)
-    expect(requestedUrl).not.toContain('idProcessoDoc')
+  it('includes idProcessoDoc when given one', () => {
+    const url = documentHtmlUrl(htmlRef.ca, htmlRef.idProcessoDoc)
+    expect(url).toContain(`idProcessoDoc=${htmlRef.idProcessoDoc}`)
   })
 })

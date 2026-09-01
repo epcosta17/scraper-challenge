@@ -17,24 +17,22 @@ export interface BinaryDocumentRef {
 
 export interface HtmlDocumentRef {
   kind: 'html'
-  /**
-   * The document's id within the case's file: the real `idProcessoDoc` when
-   * the trigger carried one, otherwise a synthetic id derived from the case
-   * number and label (see `syntheticDocId`) — never `null`, so every other
-   * part of the pipeline (`isDocumentDownloaded`, `upsertDocument`, progress
-   * reporting) can treat every `DocumentRef` uniformly.
-   */
+  /** The document's id within the case's file — always the real `idProcessoDoc` (see below). */
   id: number
   /** 112-hex, session-bound and short-lived — see `documentHtmlUrl`. */
   ca: string
   /**
-   * The real `idProcessoDoc` query param, when the trigger had one. `null`
-   * for a case's procedural-movement timeline, which links to a document
-   * this same way but never carries this param (see `parseDetailPage`) —
-   * `documentHtmlUrl` must omit the param entirely in that case, not pass a
-   * placeholder.
+   * The real `idProcessoDoc` query param. Every `HtmlDocumentRef` carries
+   * one: a trigger through this same endpoint with no `idProcessoDoc` at
+   * all is a case's procedural-movement timeline linking to a document, not
+   * a document itself (see `parseDetailPage`), and is dropped during
+   * parsing rather than kept under a synthetic id — verified live (cases
+   * 130104 and 130109) that such a trigger either re-fetches an act already
+   * present on the page under its real id, or a page with no act on it at
+   * all (just the "Imprimir / Gerar PDF" toolbar), so keeping it never adds
+   * a document that isn't already accounted for.
    */
-  idProcessoDoc: number | null
+  idProcessoDoc: number
   label: string
   date: string | null
   type: string | null
@@ -59,19 +57,21 @@ export interface MalformedDocumentRef {
 export type DocumentRef = BinaryDocumentRef | HtmlDocumentRef | MalformedDocumentRef
 
 // A real case page always prints the CNJ case number; the expired/invalid-ca
-// page never does (see `fetchDetail` below). Declared here, not just near
-// `fetchDetail`, because `parseDetailPage` also needs it: the case number is
-// half of the synthetic id it derives for a document with no `idProcessoDoc`
-// of its own (see `syntheticDocId`).
+// page never does — this is `fetchDetail`'s own check for which kind of page
+// it got back.
 const CASE_NUMBER_RE = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/
 
 /**
- * Deterministically derives a document id from arbitrary text, for the two
- * shapes that carry no real `idProcessoDoc` to key off: a procedural-
- * movement HTML trigger (case number + label — both stable across re-fetches,
- * unlike that trigger's own ephemeral `ca`) and a malformed link (its raw
- * trigger text, so at least identical failures collapse to one row rather
- * than growing `failures` without bound).
+ * Deterministically derives a document id from arbitrary text, for a
+ * malformed link — a document-shaped trigger this parser doesn't recognise
+ * (see `MalformedDocumentRef`) — keyed off its raw trigger text, so at least
+ * identical failures collapse to one row rather than growing `failures`
+ * without bound.
+ *
+ * (A procedural-movement HTML trigger — the *other* shape with no real
+ * `idProcessoDoc` to key off — used to get a synthetic id here too, but is
+ * now dropped during parsing instead: see `HtmlDocumentRef.idProcessoDoc`'s
+ * doc comment for why keeping it never added a document worth having.)
  *
  * Offset well above any real `idProcessoDocumento` observed in the wild
  * (a few million) so a synthetic and a real id can never collide in the
@@ -111,10 +111,10 @@ function parseLabel(rawText: string): { label: string; date: string | null; type
 // Found live (case 0013478-88.2026.4.05.0000): a case's own procedural-
 // movement timeline links to one of its documents through this exact same
 // endpoint and a same-shaped 112-hex `ca`, but never carries `idProcessoDoc`
-// at all — that param belongs to the document, not the movement, and
-// appending any value for it (even the right document's real id) breaks the
-// fetch outright (see `documentHtmlUrl`). Matching it as optional, rather
-// than requiring it, is what tells the two apart.
+// at all — that param belongs to the document, not the movement. Matching it
+// as optional, rather than requiring it, is what tells the two apart: see
+// `parseDetailPage` below, which drops a trigger with no `idProcessoDoc`
+// rather than turning it into a document.
 const HTML_TRIGGER_RE = /documentoSemLoginHTML\.seam\?ca=([0-9a-f]{112})(?:&idProcessoDoc=(\d+))?/
 
 /**
@@ -129,7 +129,6 @@ const HTML_TRIGGER_RE = /documentoSemLoginHTML\.seam\?ca=([0-9a-f]{112})(?:&idPr
 export function parseDetailPage(html: string): DocumentRef[] {
   const $ = cheerio.load(html)
   const documents: DocumentRef[] = []
-  const caseNumber = CASE_NUMBER_RE.exec(html)?.[0] ?? 'unknown-case'
 
   $('a[href*="idBin="]').each((_, el) => {
     const href = $(el).attr('href')
@@ -156,8 +155,16 @@ export function parseDetailPage(html: string): DocumentRef[] {
     }
     const ca = m[1]!
     const idProcessoDoc = m[2] ? Number(m[2]) : null
-    const id = idProcessoDoc ?? syntheticDocId(`${caseNumber}|${label}`)
-    documents.push({ kind: 'html', id, ca, idProcessoDoc, label, date, type })
+    if (idProcessoDoc === null) {
+      // A case's procedural-movement timeline, not a document — see
+      // `HtmlDocumentRef.idProcessoDoc`'s doc comment. Dropped rather than
+      // kept under a synthetic id: verified live, every such trigger either
+      // duplicates an act already on the page under its real id, or fetches
+      // a page with no act at all, so it never contributes a document this
+      // page's other, real triggers don't already cover.
+      return
+    }
+    documents.push({ kind: 'html', id: idProcessoDoc, ca, idProcessoDoc, label, date, type })
   })
 
   return documents
