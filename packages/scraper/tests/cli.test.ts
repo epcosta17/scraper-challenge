@@ -241,3 +241,59 @@ describe('main — crawl exit code reflects whether the run recorded failures', 
     expect(code).toBe(0)
   })
 })
+
+describe('main — progress never touches stdout, `--json` stays the only thing there', () => {
+  let dir: string
+  let logSpy: ReturnType<typeof vi.spyOn>
+  let errorSpy: ReturnType<typeof vi.spyOn>
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+    errorSpy?.mockRestore()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('crawl --json --verbose: stdout gets exactly one call, and it parses as JSON; per-id progress lands on stderr', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-json-clean-'))
+    const dbPath = join(dir, 'test.db')
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = (async () => new Response(realPdf, { status: 200 })) as unknown as typeof fetch
+
+    const code = await main(
+      [
+        'crawl', '--from-id', '1', '--to-id', '1', '--concurrency', '1', '--json', '--verbose',
+        '--db', dbPath, '--out', join(dir, 'pdfs'),
+      ],
+      { fetchImpl },
+    )
+
+    expect(code).toBe(0)
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    expect(() => JSON.parse(logSpy.mock.calls[0]![0] as string)).not.toThrow()
+    // Per-id progress (verbose) went to stderr instead, proving it never
+    // shared stdout with the JSON result.
+    expect(errorSpy.mock.calls.length).toBeGreaterThan(0)
+  })
+
+  it('deep --json --verbose (single target): stdout gets exactly one call, and it parses as JSON', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-json-clean-deep-'))
+    const dbPath = join(dir, 'test.db')
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = (async () => new Response(realPdf, { status: 200 })) as unknown as typeof fetch
+
+    const code = await main(
+      ['deep', '130100', '--json', '--verbose', '--db', dbPath, '--out', join(dir, 'pdfs')],
+      { fetchImpl },
+    )
+
+    // This target's `ca` can't resolve with this stub (no search bridge
+    // wired), so the case comes back as a recorded failure — fine here:
+    // only the stdout/stderr split is under test, not the outcome.
+    expect(code).toBe(1)
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    expect(() => JSON.parse(logSpy.mock.calls[0]![0] as string)).not.toThrow()
+    expect(errorSpy.mock.calls.length).toBeGreaterThan(0)
+  })
+})
