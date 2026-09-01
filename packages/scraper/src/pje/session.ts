@@ -23,7 +23,24 @@ export function parseSessionFromHtml(html: string): PjeSession {
   return { actionUrl: action.startsWith('http') ? action : HOST + action, submitParam: submit }
 }
 
+/**
+ * Fetches the search page and parses the session out of it.
+ *
+ * Clears the client's cookie jar first. Found live: when the jar already
+ * carries a cookie (e.g. a JSESSIONID planted by an unrelated prior request
+ * on the same client — a summary PDF fetch, say), the server infers the
+ * client already supports cookies and stops URL-rewriting the session into
+ * the form's `action` attribute. The resulting `actionUrl` then carries no
+ * `;jsessionid=` segment at all, and the subsequent POST to it fails with
+ * `ActionNotExecutedError` ("no Ajax-Update-Ids header at all") — not
+ * because the submit parameter is stale, but because the session the form
+ * was rendered under and the one the POST's cookie now claims have quietly
+ * diverged. "Start a session" has to mean start a NEW one: inheriting a
+ * stale cookie here is exactly what breaks the URL rewriting this whole
+ * flow depends on.
+ */
 export async function startSession(client: HttpClient): Promise<PjeSession> {
+  client.jar.clear()
   const res = await client.request(searchPageUrl())
   return parseSessionFromHtml(decodeLatin1(res.body))
 }

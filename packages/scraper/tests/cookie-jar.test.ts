@@ -26,4 +26,11 @@ describe('CookieJar', () => {
   it('returns an empty string when no cookies are stored', () => {
     expect(new CookieJar().header()).toBe('')
   })
+
+  it('clear() empties the jar', () => {
+    const jar = new CookieJar()
+    jar.setFromHeaders(headersWith('JSESSIONID=abc; Path=/', 'ROUTER_ID=r1; Path=/'))
+    jar.clear()
+    expect(jar.header()).toBe('')
+  })
 })

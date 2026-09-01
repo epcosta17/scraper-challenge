@@ -22,4 +22,9 @@ export class CookieJar {
   header(): string {
     return [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ')
   }
+
+  /** Empties the jar. See `startSession`'s doc comment for why starting a session needs this. */
+  clear(): void {
+    this.cookies.clear()
+  }
 }
