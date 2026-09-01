@@ -131,6 +131,25 @@ export function parseArgs(argv: string[]): ParsedArgs {
  * goes out. Exit code 2, like every other `ArgsError`.
  */
 export function validateCommandUsage(args: ParsedArgs): void {
+  // A bare positional — most naturally a pasted case number, e.g.
+  // `scraper search 0013201-41.2025.4.05.8202` — is silently collected and
+  // then ignored by every flag parser downstream, running an unfiltered
+  // search (or an unbounded crawl) instead of failing loudly. Point at the
+  // flag that was actually meant.
+  if (
+    (args.command === 'search' || args.command === 'crawl' || args.command === 'daily') &&
+    args.positional.length > 0
+  ) {
+    const hint = args.command === 'search'
+      ? ' Did you mean --number? (e.g. --number ' + JSON.stringify(args.positional[0]) + ')'
+      : ''
+    throw new ArgsError(
+      `Unexpected argument "${args.positional[0]}" for '${args.command}'.${hint} ` +
+      `'${args.command}' takes no positional arguments — everything is passed via flags ` +
+      '(see --help).',
+    )
+  }
+
   if (args.command === 'search' && args.partition) {
     throw new ArgsError(
       '--partition is not implemented in this phase (automatic subdivision of a capped ' +

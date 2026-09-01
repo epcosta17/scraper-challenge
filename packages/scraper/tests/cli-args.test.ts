@@ -135,4 +135,29 @@ describe('validateCommandUsage', () => {
     const a = parseArgs(['crawl', '--from-id', '1', '--to-id', '500'])
     expect(() => validateCommandUsage(a)).not.toThrow()
   })
+
+  it('rejects a positional argument on search, pointing at --number', () => {
+    // The most natural thing an assessor will type — `scraper search
+    // 0013201-41.2025.4.05.8202` — must not silently run an unfiltered
+    // search and present 30 arbitrary rows as the answer.
+    const a = parseArgs(['search', '0013201-41.2025.4.05.8202'])
+    expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+    try {
+      validateCommandUsage(a)
+      expect.unreachable()
+    } catch (err) {
+      expect(err).toBeInstanceOf(ArgsError)
+      expect((err as ArgsError).message).toMatch(/--number/)
+    }
+  })
+
+  it('rejects a positional argument on crawl', () => {
+    const a = parseArgs(['crawl', '130100'])
+    expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+  })
+
+  it('rejects a positional argument on daily', () => {
+    const a = parseArgs(['daily', 'x'])
+    expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+  })
 })

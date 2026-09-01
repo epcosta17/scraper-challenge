@@ -89,4 +89,30 @@ describe('fetchReportPdf', () => {
     expect(client.attempts).toBeGreaterThan(1)
     expect(client.attempts).toBeLessThanOrEqual(4)
   })
+
+  // A portal-wide shape change (a maintenance page, a bot-manager
+  // interstitial, a login redirect) can also come back as HTTP 200 + HTML.
+  // Classifying every 200-non-PDF response as `absent` would make every id
+  // look like a confirmed miss and silently stop the crawl after 50 of them
+  // — the exact silent-wrong-answer this codebase exists to prevent. Only a
+  // response that actually looks like the known error.seam page — by its
+  // final URL or a marker in its body, both derived from the real fixture —
+  // may be classified `absent`; anything else 200-but-unrecognised must be
+  // `transient` so it gets retried and then recorded as a failure.
+  it('classifies the real error.seam fixture as absent by its body marker, even at an unrelated URL', async () => {
+    const client = clientReturning(errorHtml, 'https://x/some-other-path', 200)
+    const res = await fetchReportPdf(client, 999999999)
+    expect(res.kind).toBe('absent')
+  })
+
+  it('classifies an unrecognised 200 HTML body as transient rather than a silent absence', async () => {
+    const html = Buffer.from('<html>maintenance</html>')
+    const client = clientReturning(html, 'https://x/portal-home', 200)
+    const res = await fetchReportPdf(client, 42)
+    expect(res.kind).toBe('transient')
+    if (res.kind === 'transient') {
+      expect(res.status).toBe(200)
+      expect(res.finalUrl).toBe('https://x/portal-home')
+    }
+  })
 })

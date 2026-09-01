@@ -1,5 +1,5 @@
 import {
-  upsertCase, recordProbe, recordFailure, getMaxCaseId,
+  upsertCase, recordProbe, recordFailure, resolveFailure, getMaxCaseId,
   type Db, type BlobStore,
 } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
@@ -139,7 +139,11 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
       } else {
         const record = parseCaseRecord(result.pdf)
         const key = pdfKeyFor(record)
-        await blobs.put(key, result.pdf)
+        // The row is written first: if `upsertCase` throws (most notably
+        // `DuplicateCaseNumberError`, when two different ids resolve to the
+        // same case number), the blob is never touched, so a failed insert
+        // never leaves — or overwrites — a PDF that has no corresponding
+        // database row.
         upsertCase(db, {
           idProcessoTrf: id,
           number: record.number,
@@ -155,6 +159,11 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
           parties: [],
           summaryPdfKey: key,
         })
+        await blobs.put(key, result.pdf)
+        // This id may have failed on an earlier run (a transient error, a
+        // 429 that exhausted its retries); it just succeeded, so any such
+        // record is no longer accurate.
+        resolveFailure(db, 'summary_pdf', String(id))
         stored++
         outcome = 'stored'
       }

@@ -172,4 +172,17 @@ describe('parseSearchResponse', () => {
     const xmlWithoutHeader = '<partial-response><changes></changes></partial-response>'
     expect(() => parseSearchResponse(xmlWithoutHeader)).toThrow(ActionNotExecutedError)
   })
+
+  it('throws instead of silently dropping a row missing its number or ca', () => {
+    // The action ran (the header is correct and a row marker is present),
+    // but the row's content doesn't match the number/ca patterns this parser
+    // expects — the response shape changed underneath it. Silently skipping
+    // the row would hand the caller a result set that looks complete but
+    // isn't, with no signal anything went wrong.
+    const xml = [
+      '<meta name="Ajax-Update-Ids" content="fPP:processosGridPanel"/>',
+      '<span id="fPP:processosTable:123:foo">malformed row, no number or ca here</span>',
+    ].join('\n')
+    expect(() => parseSearchResponse(xml)).toThrow(ActionNotExecutedError)
+  })
 })

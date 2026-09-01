@@ -50,6 +50,10 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       // `search()` below re-validates internally — cheap, idempotent, and
       // worth keeping as a defence for any other caller of `search()`.
       validateFilters(args.filters)
+      if (args.dryRun) {
+        console.log(`Would search with filters: ${JSON.stringify(args.filters)}`)
+        return 0
+      }
       const session = await startSession(client)
       const outcome = await search(client, session, args.filters)
       if (args.json) {
@@ -88,9 +92,21 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       console.log(args.json ? JSON.stringify(summary, null, 2) : summaryLines(summary))
       const unresolved = listFailures(db, { unresolvedOnly: true })
       if (unresolved.length > 0) {
-        console.log(`\n${unresolved.length} unresolved failures recorded. Re-run to retry them.`)
+        // A default re-run resumes from `MAX(id_processo_trf)` and so never
+        // revisits a lower id on its own — the range has to be given again
+        // explicitly, or these rows stay unresolved forever.
+        console.log(
+          `\n${unresolved.length} unresolved failures recorded. Re-run 'crawl' with an ` +
+          '--from-id/--to-id range covering them to retry — a default re-run resumes from ' +
+          'the watermark and will not revisit them on its own.',
+        )
       }
-      return 0
+      // A run where every id failed must not look like a clean one: a
+      // `daily` in cron with a 100% failure rate is otherwise indistinguishable
+      // from a normal night with nothing to do. Nonzero exactly when this run
+      // itself recorded at least one failure (not merely when older,
+      // still-unresolved failures exist from a previous run).
+      return summary.failed > 0 ? 1 : 0
     } finally {
       db.close()
     }

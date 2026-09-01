@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openDatabase, FsBlobStore, getMaxCaseId, listFailures, getProbedIds } from '@pje/core'
+import { openDatabase, FsBlobStore, getMaxCaseId, listFailures, getProbedIds, type BlobStore } from '@pje/core'
 import { HttpClient } from '../src/http/client.ts'
 import { crawl, pdfKeyFor } from '../src/crawl/enumerate.ts'
 
@@ -48,6 +48,17 @@ function fakeServerWithTransientIds(present: Set<number>, absent: Set<number>) {
     return r
   }) as unknown as typeof fetch
   return new HttpClient({ fetchImpl: impl, sleep: async () => {}, rps: 0 })
+}
+
+/** Wraps a `BlobStore`, recording every key `put` is called with. */
+function countingBlobStore(inner: BlobStore): BlobStore & { puts: string[] } {
+  const puts: string[] = []
+  return {
+    puts,
+    put: (key, data) => { puts.push(key); return inner.put(key, data) },
+    get: (key) => inner.get(key),
+    exists: (key) => inner.exists(key),
+  }
 }
 
 let dir: string
@@ -186,5 +197,34 @@ describe('crawl', () => {
     // id 2's outcome is reported after id 3's, not before.
     expect(seen.indexOf('2:stored')).toBeGreaterThan(seen.indexOf('3:absent'))
     expect(summary).toEqual({ stored: 1, absent: 4, failed: 0, lastId: 5 })
+  })
+
+  it('does not write the blob when the row insert fails, so no PDF is orphaned on disk', async () => {
+    // Ids 1 and 2 both serve the same fixture PDF, so they parse to the same
+    // case number: id 2's upsert collides on `cases.number` and throws
+    // DuplicateCaseNumberError. The blob must only be written once — after
+    // the row insert that actually succeeded — never before it, and never
+    // for the id whose insert failed.
+    const client = fakeServer(new Set([1, 2]))
+    const counting = countingBlobStore(blobs)
+    const summary = await crawl({ client, db, blobs: counting }, { fromId: 1, toId: 2, concurrency: 1 })
+
+    expect(summary).toEqual({ stored: 1, absent: 0, failed: 1, lastId: 2 })
+    expect(listFailures(db)[0]!.error).toMatch(/already stored/)
+    expect(counting.puts).toEqual(['2026/0013475-36.2026.4.05.0000/summary.pdf'])
+  })
+
+  it('resolves a previously recorded failure once the id later succeeds', async () => {
+    // First run: id 1 is persistently transient (never absent, never a PDF)
+    // and lands in `failures`, unresolved.
+    const failingClient = fakeServerWithTransientIds(new Set(), new Set())
+    await crawl({ client: failingClient, db, blobs }, { fromId: 1, toId: 1, concurrency: 1 })
+    expect(listFailures(db, { unresolvedOnly: true }).map((f) => f.ref)).toEqual(['1'])
+
+    // Second run over the same id: this time it succeeds.
+    const succeedingClient = fakeServer(new Set([1]))
+    await crawl({ client: succeedingClient, db, blobs }, { fromId: 1, toId: 1, concurrency: 1 })
+
+    expect(listFailures(db, { unresolvedOnly: true })).toHaveLength(0)
   })
 })

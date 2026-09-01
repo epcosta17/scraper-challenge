@@ -148,6 +148,7 @@ export function parseSearchResponse(xml: string): SearchOutcome {
   const boundaries = [...firstOffset.entries()].sort((a, b) => a[1] - b[1])
 
   const rows: SearchRow[] = []
+  let dropped = 0
   for (let i = 0; i < boundaries.length; i++) {
     const [id, start] = boundaries[i]!
     const end = boundaries[i + 1]?.[1] ?? xml.length
@@ -155,6 +156,19 @@ export function parseSearchResponse(xml: string): SearchOutcome {
     const number = NUMBER_RE.exec(chunk)?.[1]
     const ca = CA_RE.exec(chunk)?.[1]
     if (number && ca) rows.push({ idProcessoTrf: id, number, ca })
+    else dropped++
+  }
+
+  // A row marker present without a matching number/ca is not "one fewer
+  // result" — it means the response shape changed underneath this parser.
+  // Silently skipping it would hand the caller a result set that looks
+  // complete but is missing rows with no signal anything went wrong, in
+  // code that goes to real lengths elsewhere to prevent exactly that.
+  if (dropped > 0) {
+    throw new ActionNotExecutedError(
+      `${dropped} of ${boundaries.length} result row(s) were missing a case number or ca ` +
+      'token — the response shape likely changed',
+    )
   }
 
   return { rows, capped: xml.includes('muitos processos') }

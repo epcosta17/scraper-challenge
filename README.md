@@ -40,7 +40,10 @@ passed to it. `npm run scraper -- <command> [options]`.
 
 ### `search` — query the portal's own search form
 
-Faithful to the website: same fields, same validation, same 30-row cap.
+Faithful to the website: same fields, same validation, same 30-row cap. A
+case number (or any other value) always goes through a flag — `search` takes
+no bare positional arguments, so `scraper search 0013201-41.2025.4.05.8202`
+is rejected outright rather than silently running an unfiltered search:
 
 ```bash
 npm run scraper -- search --number 0013201-41.2025.4.05.8202
@@ -66,6 +69,9 @@ WARNING: 30 results — the server cap was reached, so there are more.
          The portal has no pagination. --partition is not implemented
          in this phase; use `crawl` for complete coverage.
 ```
+
+`--dry-run` works here too: it prints the filters `search` would submit and
+makes no request at all.
 
 ### `crawl` — enumerate every case by internal id
 
@@ -98,6 +104,14 @@ npm run scraper -- crawl --from-id 130100 --to-id 130105 --dry-run
 ```
 Would crawl from 130100 to 130105
 ```
+
+**Exit code:** `crawl` and `daily` exit `0` when the run recorded zero
+failures and `1` when it recorded at least one (the `Failed:` count above is
+nonzero). This is judged on the current run only, not on older unresolved
+rows left over from a previous one — so a `daily` in cron that fails on
+every id looks different from a clean run in its exit code, not just in a
+log line nobody is watching. `search` and `--dry-run` runs are unaffected;
+they exit `0` on success and `2` on a rejected argument, as before.
 
 ### `case` and `deep` — phase 2, not implemented yet
 
