@@ -1,17 +1,20 @@
 import {
   upsertCase, getCaseById, getCaseByNumber, recordFailure, resolveFailure,
-  isDocumentDownloaded, upsertDocument,
-  type Db, type BlobStore, type StoredCase,
+  isDocumentDownloaded, upsertDocument, replacePartiesForCase, replaceMovementsForCase,
+  type Db, type BlobStore, type StoredCase, type PartyInput, type MovementInput,
 } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
 import { CookieJar } from '../http/cookie-jar.ts'
 import { fetchReportPdf } from '../pje/report.ts'
 import { startSession } from '../pje/session.ts'
 import { search, ActionNotExecutedError } from '../pje/search.ts'
-import { fetchDetail, type DocumentRef, type BinaryDocumentRef } from '../pje/detail.ts'
+import { fetchDetail, type DocumentRef, type BinaryDocumentRef, type DetailResult, type ProcessFields } from '../pje/detail.ts'
 import { downloadDocument } from '../pje/download.ts'
-import { parseCaseRecord, type CaseRecord } from '../pdf/parse.ts'
+import { parseCaseRecord, parseMovements, extractPdfText, type CaseRecord } from '../pdf/parse.ts'
 import { pdfKeyFor } from './enumerate.ts'
+
+/** The `'valid'` arm of `DetailResult` — pulled out once so the truncation helpers below don't repeat the union narrowing. */
+type ValidDetail = Extract<DetailResult, { kind: 'valid' }>
 
 export interface DeepDeps {
   client: HttpClient
@@ -90,7 +93,18 @@ export function documentPdfKeyFor(caseNumber: string, ref: BinaryDocumentRef): s
   return `${year}/${caseNumber}/documents/${base}.pdf`
 }
 
-function caseUpsertFromRecord(idProcessoTrf: number, record: CaseRecord, ca: string | null, summaryPdfKey: string): StoredCase {
+/**
+ * `processFields` is only ever known once the detail page has been fetched
+ * — omitted (or absent from the response), the three fields it carries
+ * (`jurisdiction`, `courtAddress`, `referenceNumber`) go in as `null`, and
+ * `upsertCase`'s own COALESCE-on-conflict treatment of them (see
+ * `cases.ts`) is what stops that from blanking out a value a previous run
+ * already captured.
+ */
+function caseUpsertFromRecord(
+  idProcessoTrf: number, record: CaseRecord, ca: string | null, summaryPdfKey: string,
+  processFields: ProcessFields | null = null,
+): StoredCase {
   return {
     idProcessoTrf,
     number: record.number,
@@ -102,9 +116,92 @@ function caseUpsertFromRecord(idProcessoTrf: number, record: CaseRecord, ca: str
     distributedAt: record.distributedAt,
     subjects: record.subjects,
     // Parties still come only from the summary PDF path (none — see
-    // enumerate.ts) until a party parser is built; out of scope here.
+    // enumerate.ts) until a party parser is built; out of scope here. The
+    // richer, per-polo parties this module now parses live in their own
+    // `parties` table (see `replacePartiesForCase` below), not this column.
     parties: [],
     summaryPdfKey,
+    jurisdiction: processFields?.jurisdiction ?? null,
+    courtAddress: processFields?.courtAddress ?? null,
+    referenceNumber: processFields?.referenceNumber ?? null,
+  }
+}
+
+function countByPolo(parties: readonly PartyInput[], polo: PartyInput['polo']): number {
+  return parties.filter((p) => p.polo === polo).length
+}
+
+/**
+ * True when the detail page's own stated total for either polo disagrees
+ * with how many party rows were actually parsed — the signal that the
+ * Richfaces.Datascroller (never driven here — a separate problem) is hiding
+ * a further page of participants. A `null` total (the polo's table itself
+ * wasn't found) is not evidence of truncation on its own.
+ */
+function partiesTruncated(detail: ValidDetail): boolean {
+  const ativo = countByPolo(detail.parties, 'ativo')
+  const passivo = countByPolo(detail.parties, 'passivo')
+  return (
+    (detail.partiesAtivoTotal !== null && ativo !== detail.partiesAtivoTotal) ||
+    (detail.partiesPassivoTotal !== null && passivo !== detail.partiesPassivoTotal)
+  )
+}
+
+/**
+ * Stores a case's parties (from the detail page — see `parseParties`), and
+ * records — loudly, in `failures`, never silently — whenever either polo
+ * came back shorter than the page's own stated total (see
+ * `partiesTruncated`).
+ *
+ * A `failures` row was chosen over a boolean flag on the case itself: it
+ * reuses infrastructure this codebase already has for "something needs a
+ * retry or a human's attention" (visible via `listFailures`, cleared via
+ * `resolveFailure` exactly like every other failure kind here), whereas a
+ * new `cases` column would need its own migration, its own query surface,
+ * and would still leave the *reason* — which polo, how many rows short —
+ * needing to live somewhere; `failures.error` already has room for that.
+ * The case itself is NOT marked failed: a truncated party list is a real,
+ * if incomplete, result, and the rest of the case (documents, the other
+ * polo) is still worth keeping — unlike a `deep_case` failure, this must
+ * never make the caller skip storing what it does have.
+ */
+function storeParties(db: Db, idProcessoTrf: number, detail: ValidDetail): void {
+  replacePartiesForCase(db, idProcessoTrf, detail.parties)
+  if (partiesTruncated(detail)) {
+    const ativo = countByPolo(detail.parties, 'ativo')
+    const passivo = countByPolo(detail.parties, 'passivo')
+    recordFailure(
+      db, 'parties', String(idProcessoTrf),
+      `Parsed ${ativo} ativo / ${passivo} passivo parties but the page states ` +
+      `${detail.partiesAtivoTotal ?? '?'} / ${detail.partiesPassivoTotal ?? '?'} — ` +
+      'the Datascroller is hiding a further page, never followed by this scraper.',
+    )
+  } else {
+    resolveFailure(db, 'parties', String(idProcessoTrf))
+  }
+}
+
+/**
+ * Cross-checks the movements already parsed from the summary PDF (see
+ * `pdf/parse.ts`'s `parseMovements` for why the PDF, not the HTML, is the
+ * source of the rows themselves) against the *detail page's own* stated
+ * total for the same table (`detail.movementsTotal`). The two sources
+ * normally agree (verified live: PDF count 39 vs HTML-stated 39 for
+ * 0800245-51.2020.4.05.8002); a disagreement means "the PDF is complete"
+ * has stopped holding for this case, which is exactly the kind of silent
+ * data loss `failures` exists to surface instead of swallow. Only `deep`
+ * can run this check — `crawl` never fetches the detail page — so a case
+ * scraped only by `crawl` has movements stored with no cross-check done.
+ */
+function checkMovementsTruncation(db: Db, idProcessoTrf: number, movements: readonly MovementInput[], detail: ValidDetail): void {
+  if (detail.movementsTotal !== null && movements.length !== detail.movementsTotal) {
+    recordFailure(
+      db, 'movements', String(idProcessoTrf),
+      `Parsed ${movements.length} movements from the summary PDF but the detail page states ` +
+      `${detail.movementsTotal} — the "PDF has the complete log" assumption may have broken for this case.`,
+    )
+  } else {
+    resolveFailure(db, 'movements', String(idProcessoTrf))
   }
 }
 
@@ -114,6 +211,15 @@ function caseUpsertFromRecord(idProcessoTrf: number, record: CaseRecord, ca: str
  * the per-case cookie isolation below, this just keeps the bridge itself
  * polite under a high `--concurrency`, the same way a single `HttpClient`
  * chokepoint keeps the rest of the run polite.
+ *
+ * This pairs with `startSession` clearing its jar before every GET (see
+ * `session.ts`): once a session is allowed to start from a clean jar, two
+ * workers doing that *concurrently* on jars they otherwise share would
+ * clobber each other's freshly-planted cookie mid-sequence — the exact
+ * cross-case corruption `deepCase`'s per-case `caseClient` isolation exists
+ * to prevent, reintroduced at the sub-case level if the bridge weren't also
+ * serialized here. The jar-clearing fix makes starting clean *safe*; this
+ * queue is what makes starting clean *exclusive*, so no two starts race.
  */
 const searchBridgeQueue = new WeakMap<HttpClient, Promise<unknown>>()
 
@@ -213,6 +319,21 @@ async function downloadOneDocument(
 
   if (ref.kind === 'binary' && result.kind === 'pdf') {
     const key = documentPdfKeyFor(caseNumber, ref)
+    // Reuses the same stream-walking extractor `parseCaseRecord` runs on the
+    // summary PDF (see `pdf/parse.ts`) — a binary document's text otherwise
+    // lives only inside a PDF on disk, invisible to anything indexing this
+    // column later. `result.pdf` already passed the `%PDF-` magic check
+    // inside `fetchClassifiedPdf`, so `extractPdfText` here can't throw for
+    // that reason; it's still wrapped, because a page whose only text lives
+    // in a stream this scanner can't inflate (a non-Flate filter — see
+    // `streams.ts`) must degrade to a null `text_content`, not fail the
+    // whole document over a PDF that downloaded and stored just fine.
+    let textContent: string | null
+    try {
+      textContent = extractPdfText(result.pdf)
+    } catch {
+      textContent = null
+    }
     upsertDocument(deps.db, {
       idProcessoDocumento: ref.id,
       idProcessoTrf,
@@ -222,7 +343,7 @@ async function downloadOneDocument(
       docType: ref.type,
       docDate: ref.date,
       pdfKey: key,
-      textContent: null,
+      textContent,
     })
     await deps.blobs.put(key, result.pdf)
     return
@@ -297,6 +418,15 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     await blobs.put(summaryKey, report.pdf)
     resolveFailure(db, 'summary_pdf', String(idProcessoTrf))
 
+    // From the PDF, not the detail page's own movements table — see
+    // `parseMovements`'s doc comment for why. Stored now, independent of
+    // whatever happens below with the detail page/search bridge, exactly
+    // like `crawl` does (see `enumerate.ts`): a case whose detail page never
+    // resolves should still keep the procedural log its summary PDF already
+    // gave up for free.
+    const movements = parseMovements(report.pdf)
+    replaceMovementsForCase(db, idProcessoTrf, movements)
+
     let detail = ca ? await fetchDetail(caseClient, ca) : null
     if (!detail || detail.kind !== 'valid') {
       // `ca` is absent or the detail page said it's stale: re-derive it
@@ -307,8 +437,16 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
       if (detail.kind !== 'valid') {
         throw new Error(`Detail page for case ${record.number} is still invalid right after refreshing ca.`)
       }
-      upsertCase(db, caseUpsertFromRecord(idProcessoTrf, record, ca, summaryKey))
     }
+    // Only known once the detail page is in hand, whichever branch above got
+    // it — `jurisdiction`/`courtAddress`/`referenceNumber` (from
+    // `processFields`) and the parties table both live there, not in the
+    // summary PDF. Upserting again here (idempotent — see `cases.ts`'s
+    // ON CONFLICT) is what fills them in even when `ca` was already valid
+    // and the first upsert above ran with none of this yet known.
+    upsertCase(db, caseUpsertFromRecord(idProcessoTrf, record, ca, summaryKey, detail.processFields))
+    storeParties(db, idProcessoTrf, detail)
+    checkMovementsTruncation(db, idProcessoTrf, movements, detail)
 
     let stored = 0
     let skipped = 0

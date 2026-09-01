@@ -1,10 +1,10 @@
 import {
-  upsertCase, recordProbe, recordFailure, resolveFailure, getMaxCaseId,
+  upsertCase, recordProbe, recordFailure, resolveFailure, getMaxCaseId, replaceMovementsForCase,
   type Db, type BlobStore,
 } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
 import { fetchReportPdf } from '../pje/report.ts'
-import { parseCaseRecord } from '../pdf/parse.ts'
+import { parseCaseRecord, parseMovements } from '../pdf/parse.ts'
 
 export interface CrawlDeps {
   client: HttpClient
@@ -157,11 +157,25 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
           distributedAt: record.distributedAt,
           subjects: record.subjects,
           // Parties no longer come from the summary PDF; they arrive later
-          // from the case detail page's HTML.
+          // from the case detail page's HTML (see `crawl/deep.ts`).
           parties: [],
           summaryPdfKey: key,
+          // Only known once the detail page has been fetched, which `crawl`
+          // never does — `deep` fills these in later; `upsertCase`'s
+          // COALESCE-on-conflict treatment (see `cases.ts`) means a `null`
+          // here can't blank out a value `deep` already captured.
+          jurisdiction: null,
+          courtAddress: null,
+          referenceNumber: null,
         })
         await blobs.put(key, result.pdf)
+        // From the summary PDF's own log, not the detail page's — see
+        // `pdf/parse.ts`'s `parseMovements` for why — so `crawl` gets the
+        // full procedural history for every case it stores, not only the
+        // ones later deep-scraped. No cross-check against the detail page's
+        // stated total here: `crawl` never fetches that page (see
+        // `crawl/deep.ts`'s `checkMovementsTruncation` for the run that does).
+        replaceMovementsForCase(db, id, parseMovements(result.pdf))
         // This id may have failed on an earlier run (a transient error, a
         // 429 that exhausted its retries); it just succeeded, so any such
         // record is no longer accurate.

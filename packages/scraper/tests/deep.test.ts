@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openDatabase, FsBlobStore, upsertCase, getCaseById, getDocumentsByCase, listFailures, recordFailure } from '@pje/core'
+import {
+  openDatabase, FsBlobStore, upsertCase, getCaseById, getDocumentsByCase, listFailures, recordFailure,
+  getPartiesByCase, getMovementsByCase,
+} from '@pje/core'
 import { HttpClient } from '../src/http/client.ts'
 import { deepCase, deepRange, sanitizeFilename, documentPdfKeyFor } from '../src/crawl/deep.ts'
 import type { BinaryDocumentRef } from '../src/pje/detail.ts'
@@ -14,6 +17,18 @@ const realSummaryPdf = fixture('case-130100.pdf') // parses to '0013475-36.2026.
 const REAL_NUMBER = '0013475-36.2026.4.05.0000'
 const detailWithDocs = fixture('detail-with-docs.html') // 9 binary + 1 html doc
 const detailHtmlOnly = fixture('detail-html-docs-only.html') // 0 binary + 2 html doc
+// `detailHtmlOnly` and `realSummaryPdf` are live captures of two different,
+// unrelated real cases, glued together purely for document-shape tests —
+// nothing about them agrees, including the movements count `checkMovementsTruncation`
+// now cross-checks between the two (see `deep.ts`). Patching just that one
+// stated total (7 -> the 10 movements `realSummaryPdf`'s own PDF actually
+// contains — verified in `pdf-parse.test.ts`) keeps that check quiet for
+// tests that pair the two and assert on failures, without touching anything
+// else `detailHtmlOnly` is used for elsewhere in this file.
+const detailHtmlOnlyMatchingMovements = Buffer.from(
+  detailHtmlOnly.toString('latin1').replace('7 resultados encontrados', '10 resultados encontrados'),
+  'latin1',
+)
 const detailInvalidCa = fixture('detail-invalid-ca.html')
 const listViewSession = fixture('list-view.html') // action=..., submitParam=fPP:j_id244
 const samplePdf = fixture('sample-document.pdf')
@@ -32,12 +47,12 @@ function searchXmlFor(idProcessoTrf: number, number: string, ca: string): Buffer
   return Buffer.from(xml, 'latin1')
 }
 
-interface Spec { body: Buffer; status?: number; url?: string }
+interface Spec { body: Buffer; status?: number; url?: string; headers?: Record<string, string> }
 type MaybePromise<T> = T | Promise<T>
 interface PortalScript {
   summaryPdf?: (id: number) => MaybePromise<Spec>
   detail?: (ca: string) => MaybePromise<Spec>
-  searchSession?: () => MaybePromise<Spec>
+  searchSession?: (cookieSent: string | null) => MaybePromise<Spec>
   searchAction?: (body: string) => MaybePromise<Spec>
   binaryDoc?: (idBin: number) => MaybePromise<Spec>
   htmlDoc?: (ca: string, idProcessoDoc: number) => MaybePromise<Spec>
@@ -60,12 +75,12 @@ function fakePortal(script: PortalScript, requestLog: string[] = []): HttpClient
     } else if (u.pathname.startsWith('/pjeconsulta/ConsultaPublica/listView.seam')) {
       spec = init?.method === 'POST'
         ? await script.searchAction!(String(init.body ?? ''))
-        : await script.searchSession!()
+        : await script.searchSession!(new Headers(init?.headers).get('cookie'))
     } else {
       throw new Error(`Unhandled URL in test fake: ${String(url)}`)
     }
 
-    const r = new Response(spec.body, { status: spec.status ?? 200 })
+    const r = new Response(spec.body, { status: spec.status ?? 200, headers: spec.headers })
     Object.defineProperty(r, 'url', { value: spec.url ?? String(url) })
     return r
   }) as unknown as typeof fetch
@@ -117,6 +132,7 @@ describe('deepCase', () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
 
     const client = fakePortal({
@@ -138,18 +154,60 @@ describe('deepCase', () => {
     const docs = getDocumentsByCase(db, 1)
     expect(docs).toHaveLength(10)
     const binaryDocs = docs.filter((d) => d.pdfKey !== null)
-    const htmlDocs = docs.filter((d) => d.textContent !== null)
+    const htmlDocs = docs.filter((d) => d.pdfKey === null)
     expect(binaryDocs).toHaveLength(9)
     expect(htmlDocs).toHaveLength(1)
+    // Every binary document's text now comes from its own PDF too (see
+    // `downloadOneDocument`'s reuse of `extractPdfText`), not just the
+    // summary's — `samplePdf` (the fake portal's canned binary-doc response)
+    // is a real, extractable PDF (see `pdf-parse.test.ts`), so this must no
+    // longer be null for any of them.
+    for (const d of binaryDocs) expect(d.textContent).toBeTruthy()
+    expect(htmlDocs[0]!.textContent).toBeTruthy()
     for (const d of binaryDocs) expect(await blobs.exists(d.pdfKey!)).toBe(true)
     // ca did not need refreshing, so it must be unchanged.
     expect(getCaseById(db, 1)!.ca).toBe(VALID_CA)
+
+    // Dados do Processo fields the detail page adds, filled in by the
+    // second (post-detail) upsert alongside what the summary PDF already
+    // provided.
+    expect(getCaseById(db, 1)).toMatchObject({
+      jurisdiction: 'TRF5',
+      courtAddress:
+        'Tribunal Regional Federal - 5ª Região, Cais do Apolo, s/n, Recife, RECIFE - PE - CEP: 50030-908',
+      referenceNumber: '0801438-34.2016.4.05.8102',
+    })
+
+    const parties = getPartiesByCase(db, 1)
+    expect(parties).toHaveLength(3)
+    expect(parties.filter((p) => p.polo === 'ativo')).toHaveLength(2)
+    expect(parties.filter((p) => p.polo === 'passivo')).toHaveLength(1)
+
+    // From the summary PDF's own log (10 entries — see pdf-parse.test.ts),
+    // not the detail page's own table (which states only 5 for this
+    // fixture): proof `deepCase` wires movements to the PDF source, not the
+    // HTML one.
+    const movements = getMovementsByCase(db, 1)
+    expect(movements).toHaveLength(10)
+    expect(movements[0]).toMatchObject({ position: 0, description: 'Publicado Decisão em 27/08/2026.' })
+
+    // `detailWithDocs` (5 declared) and `realSummaryPdf` (10 actual) are live
+    // captures of two different, unrelated cases glued together for this
+    // test's document-shape assertions — they were never going to agree on
+    // a movements count. That disagreement is exactly what
+    // `checkMovementsTruncation` exists to surface rather than swallow;
+    // asserting it here turns what would otherwise be an untested side
+    // effect of this test's fixture choice into a documented one.
+    const movementsFailure = listFailures(db).find((f) => f.kind === 'movements')
+    expect(movementsFailure).toBeDefined()
+    expect(movementsFailure!.resolvedAt).toBeNull()
   })
 
   it('falls back to the search bridge when the cached ca is stale, and updates the stored value', async () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: STALE_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
 
     const seenDetailCas: string[] = []
@@ -168,6 +226,36 @@ describe('deepCase', () => {
     expect(outcome).toMatchObject({ kind: 'done', documentsStored: 2, documentsFailed: 0 })
     expect(seenDetailCas).toEqual([STALE_CA, BRIDGED_CA])
     expect(getCaseById(db, 1)!.ca).toBe(BRIDGED_CA)
+  })
+
+  // Found live: for a fresh id with no cached ca, deepCase fetches the
+  // summary PDF BEFORE it ever needs the search bridge (ca is null, so
+  // fetchDetail is skipped and the bridge runs next) — both on the same
+  // caseClient. A JSESSIONID planted by that PDF fetch made the server stop
+  // URL-rewriting the session into the search form's action, so the POST
+  // that followed failed with ActionNotExecutedError — not a stale submit
+  // parameter, a stale cookie. startSession clearing its jar first (see
+  // session.ts) is what makes this sequence safe.
+  it('does not let a summary PDF fetch poison the search bridge with a stale session cookie', async () => {
+    let sessionSawCookie: string | null = null
+    const client = fakePortal({
+      summaryPdf: () => ({
+        body: realSummaryPdf,
+        headers: { 'set-cookie': 'JSESSIONID=poisoned-from-report-fetch' },
+      }),
+      searchSession: (cookieSent) => {
+        sessionSawCookie = cookieSent
+        return { body: listViewSession }
+      },
+      searchAction: () => ({ body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }),
+      detail: () => ({ body: detailHtmlOnly }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+
+    expect(sessionSawCookie ?? '').not.toContain('poisoned-from-report-fetch')
+    expect(outcome).toMatchObject({ kind: 'done', idProcessoTrf: 1, number: REAL_NUMBER })
   })
 
   it('resolves a case number through the search bridge when it is not yet stored', async () => {
@@ -227,7 +315,7 @@ describe('deepCase', () => {
       searchSession: () => ({ body: listViewSession }),
       searchAction: () => ({ body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }),
       summaryPdf: () => ({ body: realSummaryPdf }),
-      detail: () => ({ body: detailHtmlOnly }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
       htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
     })
 
@@ -240,11 +328,12 @@ describe('deepCase', () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
     recordFailure(db, 'document', '12102009', 'transient HTTP 404')
     const client = fakePortal({
       summaryPdf: () => ({ body: realSummaryPdf }),
-      detail: () => ({ body: detailHtmlOnly }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
       htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
     })
 
@@ -265,6 +354,7 @@ describe('deepCase', () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
     const client = fakePortal({
       summaryPdf: () => ({ body: realSummaryPdf }),
@@ -291,6 +381,7 @@ describe('deepCase', () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
     const brokenDetail = Buffer.from(
       detailWithDocs.toString('latin1')
@@ -316,6 +407,7 @@ describe('deepCase', () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
     const requestLog: string[] = []
     const client = fakePortal({
@@ -332,6 +424,74 @@ describe('deepCase', () => {
     const second = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
     expect(second).toMatchObject({ documentsStored: 0, documentsSkipped: 2 })
     expect(requestLog.some((r) => r.includes('documentoSemLoginHTML'))).toBe(false)
+  })
+})
+
+describe('deepCase parties/movements truncation', () => {
+  it('records no truncation failure when every stated total is actually matched', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
+    })
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      // `detailWithDocs`' own parties totals (2 ativo / 1 passivo) already
+      // match what it renders; only its movements total needs patching to
+      // agree with `realSummaryPdf`'s real 10-entry log (see
+      // `detailHtmlOnlyMatchingMovements` above for the same trick).
+      detail: () => ({
+        body: Buffer.from(
+          detailWithDocs.toString('latin1').replace('5 resultados encontrados', '10 resultados encontrados'),
+          'latin1',
+        ),
+      }),
+      binaryDoc: () => ({ body: samplePdf }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato judicial</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    expect(outcome.kind).toBe('done')
+    expect(listFailures(db, { unresolvedOnly: true }).map((f) => f.kind)).not.toContain('parties')
+    expect(listFailures(db, { unresolvedOnly: true }).map((f) => f.kind)).not.toContain('movements')
+    expect(getPartiesByCase(db, 1)).toHaveLength(3)
+    expect(getMovementsByCase(db, 1)).toHaveLength(10)
+  })
+
+  // The truncation contract this feature exists for: a page that states
+  // more ativo participants than it actually rendered must be caught, not
+  // silently stored as if the list were complete — and must NOT fail the
+  // case, since the rest of it (documents, the other polo) is still a real,
+  // useful result.
+  it('records a loud parties failure without failing the case when a polo is truncated', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
+    })
+    const truncatedDetail = Buffer.from(
+      detailWithDocs.toString('latin1').replace('2 resultados encontrados', '5 resultados encontrados'),
+      'latin1',
+    )
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: truncatedDetail }),
+      binaryDoc: () => ({ body: samplePdf }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato judicial</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    // The case as a whole still succeeds — every document is still stored.
+    expect(outcome).toMatchObject({ kind: 'done', documentsStored: 10 })
+
+    const failure = listFailures(db, { unresolvedOnly: true }).find((f) => f.kind === 'parties')
+    expect(failure).toBeDefined()
+    expect(failure!.error).toContain('2 ativo')
+    expect(failure!.error).toContain('5')
+
+    // The rows that WERE parsed are still stored — a truncated list beats
+    // a discarded one, as long as its truncation isn't silent.
+    expect(getPartiesByCase(db, 1)).toHaveLength(3)
   })
 })
 
@@ -400,6 +560,7 @@ describe('deepRange', () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
       court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
     })
     const client = fakePortal({
       summaryPdf: (id) => id === 1

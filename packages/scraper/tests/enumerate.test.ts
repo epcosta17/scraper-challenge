@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openDatabase, FsBlobStore, getMaxCaseId, listFailures, getProbedIds, type BlobStore } from '@pje/core'
+import {
+  openDatabase, FsBlobStore, getMaxCaseId, listFailures, getProbedIds, getMovementsByCase, type BlobStore,
+} from '@pje/core'
 import { HttpClient } from '../src/http/client.ts'
 import { crawl, pdfKeyFor } from '../src/crawl/enumerate.ts'
 
@@ -85,6 +87,18 @@ describe('crawl', () => {
     const summary = await crawl({ client, db, blobs }, { fromId: 1, toId: 1, concurrency: 1 })
     expect(summary.stored).toBe(1)
     expect(getMaxCaseId(db)).toBe(1)
+  })
+
+  // `deep` isn't the only thing that populates `movements` — `crawl` already
+  // has the summary PDF in hand for every case it stores, at zero extra
+  // requests, so the procedural log should be available for the whole
+  // corpus rather than only for cases later deep-scraped.
+  it('stores movements from the summary PDF for every stored case, not only deep-scraped ones', async () => {
+    const client = fakeServer(new Set([1]))
+    await crawl({ client, db, blobs }, { fromId: 1, toId: 1, concurrency: 1 })
+    const movements = getMovementsByCase(db, 1)
+    expect(movements).toHaveLength(10)
+    expect(movements[0]).toMatchObject({ position: 0, description: 'Publicado Decisão em 27/08/2026.' })
   })
 
   it('records misses as probes, not failures', async () => {
