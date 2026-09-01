@@ -6,6 +6,7 @@ import {
   openDatabase, upsertCase, getCaseByNumber, getCaseById, getMaxCaseId,
   recordProbe, getProbedIds, recordFailure, listFailures, FsBlobStore,
   DuplicateCaseNumberError,
+  upsertDocument, isDocumentDownloaded, getDocumentsByCase,
 } from '../src/index.ts'
 
 const sample = {
@@ -113,6 +114,64 @@ describe('cases repository', () => {
     const newSubjects = ['DIREITO PENAL (100)']
     upsertCase(db, { ...sample, subjects: newSubjects })
     expect(getCaseById(db, sample.idProcessoTrf)!.subjects).toEqual(newSubjects)
+  })
+})
+
+describe('documents repository', () => {
+  const binaryDoc = {
+    idProcessoDocumento: 12284583,
+    idProcessoTrf: 130100,
+    idBin: 12039033,
+    numeroDocumento: '4caf3e2af32f9130b384fc0c2aef62251e2b3823',
+    label: '24/07/2025 20:30:45 - Despacho (Despacho)',
+    docType: 'Despacho',
+    docDate: '24/07/2025 20:30:45',
+    pdfKey: '2016/0801438-34.2016.4.05.8102/documents/2025-07-24-Despacho.pdf',
+    textContent: null,
+  }
+
+  const htmlDoc = {
+    idProcessoDocumento: 12284587,
+    idProcessoTrf: 130100,
+    idBin: null,
+    numeroDocumento: null,
+    label: '13/02/2026 14:32:27 - Despacho (Despacho)',
+    docType: 'Despacho',
+    docDate: '13/02/2026 14:32:27',
+    pdfKey: null,
+    textContent: '<html>the judicial act</html>',
+  }
+
+  beforeEach(() => {
+    upsertCase(db, sample)
+  })
+
+  it('round-trips a binary document, unmarked as downloaded until upserted', () => {
+    expect(isDocumentDownloaded(db, binaryDoc.idProcessoDocumento)).toBe(false)
+    upsertDocument(db, binaryDoc)
+    expect(isDocumentDownloaded(db, binaryDoc.idProcessoDocumento)).toBe(true)
+    const [got] = getDocumentsByCase(db, sample.idProcessoTrf)
+    expect(got).toMatchObject({ idBin: binaryDoc.idBin, pdfKey: binaryDoc.pdfKey, textContent: null })
+    expect(got!.downloadedAt).not.toBeNull()
+  })
+
+  it('round-trips an HTML document with text content instead of a blob key', () => {
+    upsertDocument(db, htmlDoc)
+    const [got] = getDocumentsByCase(db, sample.idProcessoTrf)
+    expect(got).toMatchObject({ idBin: null, pdfKey: null, textContent: htmlDoc.textContent })
+  })
+
+  it('lists only documents belonging to the requested case', () => {
+    upsertCase(db, { ...sample, idProcessoTrf: 999999, number: '0000002-22.2026.4.05.0000' })
+    upsertDocument(db, binaryDoc)
+    upsertDocument(db, { ...htmlDoc, idProcessoTrf: 999999, idProcessoDocumento: 1 })
+    expect(getDocumentsByCase(db, sample.idProcessoTrf)).toHaveLength(1)
+  })
+
+  it('is idempotent — upserting the same document id twice keeps one row', () => {
+    upsertDocument(db, binaryDoc)
+    upsertDocument(db, binaryDoc)
+    expect(getDocumentsByCase(db, sample.idProcessoTrf)).toHaveLength(1)
   })
 })
 
