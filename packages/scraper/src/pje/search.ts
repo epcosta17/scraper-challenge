@@ -147,6 +147,45 @@ export function parseSearchResponse(xml: string): SearchOutcome {
   return { rows, capped: xml.includes('muitos processos') }
 }
 
+const UNRESERVED_RE = /[A-Za-z0-9\-._~]/
+
+/**
+ * Percent-encodes one `application/x-www-form-urlencoded` component under an
+ * ISO-8859-1 charset.
+ *
+ * `URLSearchParams.toString()` always percent-encodes as UTF-8, regardless of
+ * the charset declared in the `Content-Type` header. We declare
+ * `charset=ISO-8859-1`, so a `URLSearchParams` body and that header disagree:
+ * the server decodes our UTF-8 bytes as Latin-1 and silently returns wrong
+ * (truncated) results for any accented input — no error at all.
+ */
+export function encodeFormComponent(value: string): string {
+  let out = ''
+  for (const ch of value) {
+    const cp = ch.codePointAt(0)!
+    if (UNRESERVED_RE.test(ch)) {
+      out += ch
+    } else if (ch === ' ') {
+      out += '+'
+    } else if (cp <= 0xff) {
+      out += '%' + cp.toString(16).toUpperCase().padStart(2, '0')
+    } else {
+      // A character the Latin-1 charset cannot represent: submit it the way
+      // a browser does, as a numeric character reference. Every character in
+      // `&#<cp>;` is itself below 0xFF, so this recursion always terminates.
+      out += encodeFormComponent(`&#${cp};`)
+    }
+  }
+  return out
+}
+
+/** Joins a payload into an `application/x-www-form-urlencoded; charset=ISO-8859-1` body. */
+export function encodeSearchBody(payload: Record<string, string>): string {
+  return Object.entries(payload)
+    .map(([k, v]) => `${encodeFormComponent(k)}=${encodeFormComponent(v)}`)
+    .join('&')
+}
+
 export async function search(
   client: HttpClient,
   session: PjeSession,
@@ -154,7 +193,7 @@ export async function search(
 ): Promise<SearchOutcome> {
   validateFilters(f)
   const payload = buildSearchPayload(session, f)
-  const body = new URLSearchParams(payload).toString()
+  const body = encodeSearchBody(payload)
 
   const res = await client.request(session.actionUrl, {
     method: 'POST',

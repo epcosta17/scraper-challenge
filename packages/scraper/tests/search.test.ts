@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import {
   buildSearchPayload, parseSearchResponse, validateFilters,
   SearchValidationError, ActionNotExecutedError,
+  encodeFormComponent, encodeSearchBody,
 } from '../src/pje/search.ts'
 
 const fx = (n: string) =>
@@ -53,6 +54,29 @@ describe('buildSearchPayload', () => {
     const p = buildSearchPayload(session, {}, today)
     expect(p['fPP:Decoration:estadoComboOAB'])
       .toBe('org.jboss.seam.ui.NoSelectionConverter.noSelectionValue')
+  })
+})
+
+describe('encodeFormComponent', () => {
+  it('percent-encodes Latin-1 bytes, not UTF-8, for an accented name', () => {
+    // URLSearchParams.toString() always encodes as UTF-8 regardless of the
+    // declared Content-Type charset. The server decodes our declared
+    // ISO-8859-1 bytes as Latin-1, so a UTF-8 body turns into mojibake and
+    // silently returns fewer/wrong rows — no error, just a truncated result.
+    expect(encodeFormComponent('JOSÉ SILVA')).toBe('JOS%C9+SILVA')
+  })
+
+  it('leaves plain ASCII unchanged apart from turning spaces into +', () => {
+    expect(encodeFormComponent('DA SILVA')).toBe('DA+SILVA')
+    expect(encodeFormComponent('AGRAVO-1')).toBe('AGRAVO-1')
+  })
+})
+
+describe('encodeSearchBody', () => {
+  it('encodes an accented payload value as Latin-1 (%C9), never UTF-8 (%C3%89)', () => {
+    const body = encodeSearchBody({ 'fPP:dnp:nomeParte': 'JOSÉ SILVA' })
+    expect(body).toContain('%C9')
+    expect(body).not.toContain('%C3%89')
   })
 })
 
