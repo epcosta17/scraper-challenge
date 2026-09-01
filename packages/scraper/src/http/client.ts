@@ -84,6 +84,19 @@ export class HttpClient {
     if (wait > 0) await this.sleep(wait)
   }
 
+  /**
+   * A 429 must slow down every worker sharing this client, not just the one
+   * that got rejected — otherwise the other `concurrency-1` workers keep
+   * firing at full `rps` and the aggregate rate never actually drops. Pushing
+   * the shared `nextSlot` out by the backoff delay means the next `pace()`
+   * call from *any* worker (including this one, on its own retry) waits at
+   * least that long. Only ever pushes forward, so it composes with normal
+   * pacing instead of fighting it.
+   */
+  private bumpNextSlot(delayMs: number): void {
+    this.nextSlot = Math.max(this.nextSlot, Date.now() + delayMs)
+  }
+
   async request(url: string, init: RequestInit = {}): Promise<HttpResponse> {
     const maxAttempts = this.backoff.maxAttempts ?? DEFAULT_BACKOFF.maxAttempts
 
@@ -110,8 +123,15 @@ export class HttpClient {
 
       if (res.status === 429) {
         if (attempt === maxAttempts - 1) throw new RateLimitedError(url, maxAttempts)
+        const capMs = this.backoff.capMs ?? DEFAULT_BACKOFF.capMs
         const hinted = retryAfterMs(res.headers.get('retry-after'))
-        await this.sleep(hinted ?? backoffDelay(attempt, this.backoff))
+        // A server-supplied Retry-After is honoured in preference to the
+        // computed backoff, but never past the same cap that bounds the
+        // computed path — an unbounded `Retry-After: 86400` would otherwise
+        // sleep a worker for 24 hours.
+        const delay = hinted !== null ? Math.min(hinted, capMs) : backoffDelay(attempt, this.backoff)
+        this.bumpNextSlot(delay)
+        await this.sleep(delay)
         continue
       }
 

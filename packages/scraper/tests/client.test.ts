@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { HttpClient, RateLimitedError, decodeLatin1 } from '../src/http/client.ts'
+import { DEFAULT_BACKOFF } from '../src/http/backoff.ts'
 
 /** Builds a fetch stub that replays the given responses in order. */
 function stubFetch(responses: Array<{ status: number; body?: string; headers?: Record<string, string> }>) {
@@ -90,6 +91,47 @@ describe('HttpClient', () => {
     expect(waits[0]).toBeLessThanOrEqual(110)
     expect(waits[2]).toBeGreaterThanOrEqual(290)    // ~300 ms, with clock tolerance
     expect(waits[2]).toBeLessThanOrEqual(310)
+  })
+
+  it('pushes the shared next slot forward on a 429 so a later worker cools off too', async () => {
+    // Otherwise the other `concurrency-1` workers keep firing at full `rps`
+    // while one worker sleeps off a 429 — the aggregate rate never drops.
+    const waits: number[] = []
+    const responses = [{ status: 429 }, { status: 200, body: 'ok' }, { status: 200, body: 'ok' }]
+    let i = 0
+    const impl = (async () => {
+      const r = responses[Math.min(i++, responses.length - 1)]!
+      return new Response(r.body ?? '', { status: r.status })
+    }) as unknown as typeof fetch
+    const client = new HttpClient({
+      fetchImpl: impl,
+      rps: 10, // 100 ms interval — dwarfed by the 5s backoff below if the fix works
+      sleep: async (ms) => { waits.push(ms) },
+      backoff: { baseMs: 5000, factor: 2, jitter: 0, capMs: 60_000, maxAttempts: 5 },
+    })
+
+    await client.request('https://example.test/a') // hits the 429, backs off, then succeeds
+    waits.length = 0 // isolate the next, independent worker's own pacing wait
+    await client.request('https://example.test/b')
+
+    // Without the fix this would be ~100ms (just the rps interval). With the
+    // fix, the shared slot was pushed out by the 429's backoff, so a later
+    // worker sharing the same client also cools off.
+    expect(waits[0]).toBeGreaterThan(4000)
+  })
+
+  it('caps an honoured Retry-After hint at the configured backoff cap', async () => {
+    const waits: number[] = []
+    const f = stubFetch([
+      { status: 429, headers: { 'retry-after': '86400' } }, // 24 hours
+      { status: 200, body: 'ok' },
+    ])
+    const client = new HttpClient({
+      fetchImpl: f.impl, rps: 0,
+      sleep: async (ms) => { waits.push(ms) },
+    })
+    await client.request('https://example.test/x')
+    expect(waits[0]).toBeLessThanOrEqual(DEFAULT_BACKOFF.capMs)
   })
 })
 

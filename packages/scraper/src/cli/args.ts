@@ -66,9 +66,22 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (v === undefined || v.startsWith('--')) throw new ArgsError(`${flag} requires a value.`)
     return v
   }
-  const num = (flag: string, raw: string): number => {
+  // `--concurrency 0`/`--limit 0`/`--from-id 1.5` etc. would otherwise pass
+  // `Number.isFinite` and go on to silently disable safety (0 concurrency,
+  // a no-op crawl reporting "Stored: 0" and exit 0) or reach a URL as a
+  // fractional id. Both flag families are rejected outright instead.
+  const positiveInt = (flag: string, raw: string): number => {
     const n = Number(raw)
-    if (!Number.isFinite(n)) throw new ArgsError(`${flag} requires a number, got "${raw}".`)
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new ArgsError(`${flag} requires a positive integer, got "${raw}".`)
+    }
+    return n
+  }
+  const positiveNumber = (flag: string, raw: string): number => {
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new ArgsError(`${flag} requires a positive number, got "${raw}".`)
+    }
     return n
   }
 
@@ -89,11 +102,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     switch (arg) {
-      case '--from-id': out.fromId = num(arg, value(arg, i++)); break
-      case '--to-id': out.toId = num(arg, value(arg, i++)); break
-      case '--limit': out.limit = num(arg, value(arg, i++)); break
-      case '--concurrency': out.concurrency = num(arg, value(arg, i++)); break
-      case '--rate': out.rps = num(arg, value(arg, i++)); break
+      case '--from-id': out.fromId = positiveInt(arg, value(arg, i++)); break
+      case '--to-id': out.toId = positiveInt(arg, value(arg, i++)); break
+      case '--limit': out.limit = positiveInt(arg, value(arg, i++)); break
+      case '--concurrency': out.concurrency = positiveInt(arg, value(arg, i++)); break
+      case '--rate': out.rps = positiveNumber(arg, value(arg, i++)); break
       case '--db': out.db = value(arg, i++); break
       case '--out': out.out = value(arg, i++); break
       case '--json': out.json = true; break

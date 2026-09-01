@@ -52,6 +52,37 @@ describe('parseArgs', () => {
   it('rejects a flag that is missing its value', () => {
     expect(() => parseArgs(['search', '--class'])).toThrow(ArgsError)
   })
+
+  it('rejects a zero or negative --rate, which would silently disable rate limiting', () => {
+    expect(() => parseArgs(['crawl', '--rate', '0'])).toThrow(ArgsError)
+    expect(() => parseArgs(['crawl', '--rate', '-1'])).toThrow(ArgsError)
+  })
+
+  it('accepts a fractional --rate', () => {
+    expect(parseArgs(['crawl', '--rate', '0.5']).rps).toBe(0.5)
+  })
+
+  it('rejects a non-positive --limit, which would make the crawl a silent no-op', () => {
+    expect(() => parseArgs(['crawl', '--limit', '0'])).toThrow(ArgsError)
+    expect(() => parseArgs(['crawl', '--limit', '-5'])).toThrow(ArgsError)
+  })
+
+  it('rejects a non-positive --concurrency instead of silently clamping it', () => {
+    expect(() => parseArgs(['crawl', '--concurrency', '0'])).toThrow(ArgsError)
+    expect(() => parseArgs(['crawl', '--concurrency', '-1'])).toThrow(ArgsError)
+  })
+
+  it('rejects a non-integer --from-id before it reaches a URL', () => {
+    expect(() => parseArgs(['crawl', '--from-id', '1.5'])).toThrow(ArgsError)
+  })
+
+  it('rejects a non-positive --to-id', () => {
+    expect(() => parseArgs(['crawl', '--to-id', '0'])).toThrow(ArgsError)
+  })
+
+  it('rejects a non-integer --to-id', () => {
+    expect(() => parseArgs(['crawl', '--to-id', '2.2'])).toThrow(ArgsError)
+  })
 })
 
 describe('helpText', () => {
