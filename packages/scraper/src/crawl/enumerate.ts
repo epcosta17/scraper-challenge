@@ -12,6 +12,9 @@ export interface CrawlDeps {
   blobs: BlobStore
 }
 
+/** Consecutive misses that end an open-ended crawl — see `crawl`'s doc comment. */
+export const DEFAULT_STOP_AFTER_MISSES = 50
+
 export interface CrawlOptions {
   fromId?: number
   toId?: number
@@ -20,6 +23,8 @@ export interface CrawlOptions {
   /** When `toId` is absent, stop after this many consecutive misses. */
   stopAfterMisses?: number
   onProgress?: (p: CrawlProgress) => void
+  /** Extra attempts against a flaky summary-PDF response (see `fetchReportPdf`), so a retry is not silent. */
+  onRetry?: (r: { id: number; attempt: number; of: number; status: number }) => void
 }
 
 export interface CrawlProgress {
@@ -28,6 +33,10 @@ export interface CrawlProgress {
   stored: number
   absent: number
   failed: number
+  /** The case a stored id turned out to be — nothing to name for a miss. */
+  number?: string
+  /** Why a failed id failed, so the reason is visible where it happened and not only in the failures table. */
+  error?: string
 }
 
 export interface CrawlSummary {
@@ -64,7 +73,7 @@ export function pdfKeyFor(record: { number: string }): string {
 export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlSummary> {
   const { client, db, blobs } = deps
   const concurrency = Math.max(1, opts.concurrency ?? 4)
-  const stopAfterMisses = opts.stopAfterMisses ?? 50
+  const stopAfterMisses = opts.stopAfterMisses ?? DEFAULT_STOP_AFTER_MISSES
   const start = opts.fromId ?? getMaxCaseId(db) + 1
 
   let stored = 0
@@ -121,8 +130,12 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
 
   const handle = async (id: number): Promise<void> => {
     let outcome: CrawlProgress['outcome']
+    let number: string | undefined
+    let error: string | undefined
     try {
-      const result = await fetchReportPdf(client, id)
+      const result = await fetchReportPdf(client, id, {
+        onRetry: (r) => opts.onRetry?.({ id, attempt: r.attempt, of: r.of, status: r.status }),
+      })
       if (result.kind === 'absent') {
         recordProbe(db, id, 'not_found')
         absent++
@@ -135,7 +148,8 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
         // recorded purely for visibility and is not consulted by `crawl` to
         // skip anything — and this id is expected to succeed on a later run
         // once the flaky backend node recovers.
-        recordFailure(db, 'summary_pdf', String(id), `Transient HTTP ${result.status} from ${result.finalUrl}`)
+        error = `Transient HTTP ${result.status} from ${result.finalUrl}`
+        recordFailure(db, 'summary_pdf', String(id), error)
         failed++
         outcome = 'failed'
       } else {
@@ -181,6 +195,7 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
         // record is no longer accurate.
         resolveFailure(db, 'summary_pdf', String(id))
         stored++
+        number = record.number
         outcome = 'stored'
       }
     } catch (err) {
@@ -189,6 +204,7 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
       // Record and move on: the challenge requires continuing past
       // persistent failures.
       const message = err instanceof Error ? err.message : String(err)
+      error = message
       recordFailure(db, 'summary_pdf', String(id), message)
       failed++
       outcome = 'failed'
@@ -197,7 +213,7 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
     lastId = Math.max(lastId, id)
     outcomes.set(id, outcome)
     advanceFrontier()
-    opts.onProgress?.({ id, outcome, stored, absent, failed })
+    opts.onProgress?.({ id, outcome, stored, absent, failed, number, error })
   }
 
   const workers = Array.from({ length: concurrency }, async () => {

@@ -401,3 +401,77 @@ describe('main — --dry-run under --json prints a JSON plan, not prose', () => 
     ])
   })
 })
+
+describe('main — log levels', () => {
+  let dir: string
+  let logSpy: ReturnType<typeof vi.spyOn>
+  let errorSpy: ReturnType<typeof vi.spyOn>
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+    errorSpy?.mockRestore()
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** A portal that answers the summary PDF and nothing else: enough to narrate the first steps. */
+  const pdfOnlyPortal = (async () => new Response(realPdf, { status: 200 })) as unknown as typeof fetch
+
+  it('narrates the run by default: a header, then each step as it starts', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-narration-'))
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(
+      ['crawl', '--from-id', '1', '--to-id', '1', '--concurrency', '1', '--db', join(dir, 'test.db'), '--out', join(dir, 'pdfs')],
+      { fetchImpl: pdfOnlyPortal },
+    )
+
+    const stderr = errorSpy.mock.calls.map((c) => String(c[0]))
+    expect(stderr[0]).toContain('Crawling 1 id (1-1)')
+    expect(stderr[0]).toContain(`db ${join(dir, 'test.db')}`)
+    // The result itself is still the only thing on stdout.
+    expect(logSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('Stored:  1')
+  })
+
+  it('--quiet leaves stderr empty and stdout carrying the result alone', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-quiet-'))
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const code = await main(
+      ['crawl', '--from-id', '1', '--to-id', '1', '--concurrency', '1', '--quiet', '--db', join(dir, 'test.db'), '--out', join(dir, 'pdfs')],
+      { fetchImpl: pdfOnlyPortal },
+    )
+
+    expect(code).toBe(0)
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    expect(String(logSpy.mock.calls[0]![0])).toContain('Stored:  1')
+  })
+
+  it('--verbose adds the requests underneath the narration', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-verbose-http-'))
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(
+      ['crawl', '--from-id', '1', '--to-id', '1', '--concurrency', '1', '--verbose', '--db', join(dir, 'test.db'), '--out', join(dir, 'pdfs')],
+      { fetchImpl: pdfOnlyPortal },
+    )
+
+    const stderr = errorSpy.mock.calls.map((c) => String(c[0]))
+    expect(stderr.some((l) => l.includes('→ GET https://'))).toBe(true)
+    expect(stderr.some((l) => l.startsWith('  ← 200'))).toBe(true)
+    expect(stderr.some((l) => l.startsWith('+ id=1'))).toBe(true)
+  })
+
+  it('rejects --quiet --verbose before doing any work', async () => {
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    const code = await main(['crawl', '--quiet', '--verbose'], { fetchImpl })
+
+    expect(code).toBe(2)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
