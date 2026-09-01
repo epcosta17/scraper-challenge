@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { SCHEMA, migrateSchema } from './schema.ts'
+import { ensureSearchIndex } from './search-schema.ts'
 
 export type Db = Database.Database
 
@@ -33,5 +34,9 @@ export function openDatabase(path: string): Db {
   // existed) is missing — see `migrateSchema`'s own doc comment for why
   // `CREATE TABLE IF NOT EXISTS` above can't cover this by itself.
   migrateSchema(db)
+  // Likewise for the FTS5 index: creating it is free on a fresh database,
+  // but on an existing one it also has to be backfilled from the rows that
+  // were stored before it existed. See `ensureSearchIndex`.
+  ensureSearchIndex(db)
   return db
 }
