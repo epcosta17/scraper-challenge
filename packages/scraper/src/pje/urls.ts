@@ -42,8 +42,19 @@ export const documentBinUrl = (p: BinaryDocumentParams): string => {
 /**
  * The HTML document endpoint. Unlike the case's own `ca`, this `ca` is
  * session-bound: it only resolves when requested with the same cookie jar
- * that fetched the detail page it was harvested from.
+ * that fetched the detail page it was harvested from, and only for a short
+ * window — verified live, a second fetch of the same detail page minutes
+ * apart produced a completely different `ca` for this variant.
+ *
+ * `idProcessoDoc` is genuinely optional here (see `HtmlDocumentRef` — a
+ * case's procedural-movement timeline links to a document this same way but
+ * without that param) and, when there's none to pass, MUST be omitted
+ * entirely rather than passed as some placeholder: verified live, appending
+ * any `idProcessoDoc` value that doesn't match the `ca` — including one that
+ * simply doesn't exist — makes the server reject the request outright
+ * (redirects to `error.seam`) instead of ignoring the extra parameter.
  */
-export const documentHtmlUrl = (ca: string, idProcessoDoc: number): string =>
-  `${BASE}/ConsultaPublica/DetalheProcessoConsultaPublica/documentoSemLoginHTML.seam` +
-  `?ca=${ca}&idProcessoDoc=${idProcessoDoc}`
+export const documentHtmlUrl = (ca: string, idProcessoDoc: number | null): string => {
+  const suffix = idProcessoDoc !== null ? `&idProcessoDoc=${idProcessoDoc}` : ''
+  return `${BASE}/ConsultaPublica/DetalheProcessoConsultaPublica/documentoSemLoginHTML.seam?ca=${ca}${suffix}`
+}

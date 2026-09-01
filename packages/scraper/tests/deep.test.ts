@@ -243,6 +243,38 @@ describe('deepCase', () => {
     expect(listFailures(db).find((f) => f.kind === 'document')).toBeDefined()
   })
 
+  // Finding from a live range run: a single unrecognised row (there, a
+  // procedural-timeline trigger the parser didn't yet know about) used to
+  // throw out of parseDetailPage and abort deepCase entirely, storing zero
+  // of the case's documents. Fixed at the parser level (a MalformedDocumentRef
+  // instead of a thrown error — see detail.test.ts); this exercises the
+  // whole chain end to end, proving the case still completes and every
+  // *other* document on the page is still downloaded.
+  it('records a malformed document row as a failure without losing the rest of the case', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+    })
+    const brokenDetail = Buffer.from(
+      detailWithDocs.toString('latin1')
+        .replace('numeroDocumento=4caf3e2af32f9130b384fc0c2aef62251e2b3823&amp;', ''),
+      'latin1',
+    )
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: brokenDetail }),
+      binaryDoc: () => ({ body: samplePdf }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    // 8 binary + 1 html succeed; the one broken binary link fails alone.
+    expect(outcome).toMatchObject({ kind: 'done', documentsStored: 9, documentsFailed: 1 })
+    const failure = listFailures(db).find((f) => f.kind === 'document')
+    expect(failure).toBeDefined()
+    expect(failure!.error).toContain('idBin=12039033')
+  })
+
   it('skips a document that is already downloaded and makes no request for it', async () => {
     upsertCase(db, {
       idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,

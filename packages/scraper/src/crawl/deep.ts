@@ -4,10 +4,11 @@ import {
   type Db, type BlobStore, type StoredCase,
 } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
+import { CookieJar } from '../http/cookie-jar.ts'
 import { fetchReportPdf } from '../pje/report.ts'
 import { startSession } from '../pje/session.ts'
 import { search } from '../pje/search.ts'
-import { fetchDetail, type DocumentRef } from '../pje/detail.ts'
+import { fetchDetail, type DocumentRef, type BinaryDocumentRef } from '../pje/detail.ts'
 import { downloadDocument } from '../pje/download.ts'
 import { parseCaseRecord, type CaseRecord } from '../pdf/parse.ts'
 import { pdfKeyFor } from './enumerate.ts'
@@ -81,7 +82,7 @@ export function sanitizeFilename(raw: string): string {
  * documents of the same type filed in the same second are possible, and
  * this is what keeps the key collision-free without it).
  */
-export function documentPdfKeyFor(caseNumber: string, ref: DocumentRef): string {
+export function documentPdfKeyFor(caseNumber: string, ref: BinaryDocumentRef): string {
   const year = caseNumber.split('.')[1] ?? 'unknown'
   const date = ref.date ?? 'unknown-date'
   const type = ref.type ?? 'documento'
@@ -108,30 +109,35 @@ function caseUpsertFromRecord(idProcessoTrf: number, record: CaseRecord, ca: str
 }
 
 /**
- * Serializes the search bridge per `HttpClient`. Found live under
- * `deepRange`'s worker pool: `startSession` + `search` share one cookie jar
- * across every worker (the same jar the whole run's requests share), and two
- * of them bootstrapping a session at once can interleave — one worker's
- * session cookie lands in the jar just as another's POST goes out bound to
- * the OTHER worker's now-stale `actionUrl`/`submitParam`, and the server
- * reports the AJAX action never ran. The bridge itself is only hit for ids
- * without an already-valid cached `ca`, so serializing just this part costs
- * little against the throughput a whole run needs.
+ * Bounds how many search-bridge sequences (session GET + search POST) run
+ * at once against the *original*, run-wide `HttpClient` — independent of
+ * the per-case cookie isolation below, this just keeps the bridge itself
+ * polite under a high `--concurrency`, the same way a single `HttpClient`
+ * chokepoint keeps the rest of the run polite.
  */
 const searchBridgeQueue = new WeakMap<HttpClient, Promise<unknown>>()
 
-async function runExclusive<T>(client: HttpClient, fn: () => Promise<T>): Promise<T> {
-  const prior = searchBridgeQueue.get(client) ?? Promise.resolve()
+async function runExclusive<T>(lockOn: HttpClient, fn: () => Promise<T>): Promise<T> {
+  const prior = searchBridgeQueue.get(lockOn) ?? Promise.resolve()
   const result = prior.then(fn, fn)
-  searchBridgeQueue.set(client, result.then(() => undefined, () => undefined))
+  searchBridgeQueue.set(lockOn, result.then(() => undefined, () => undefined))
   return result
 }
 
-/** Runs the search bridge for one case number, returning its id and a fresh `ca`. */
-async function searchForCa(client: HttpClient, number: string): Promise<{ idProcessoTrf: number; ca: string }> {
-  return runExclusive(client, async () => {
-    const session = await startSession(client)
-    const outcome = await search(client, session, { number })
+/**
+ * Runs the search bridge for one case number, returning its id and a fresh
+ * `ca`. `lockClient` is only an identity to queue behind (see
+ * `runExclusive`); `execClient` is the one the actual requests run on —
+ * always a case-isolated client (see `deepCase`'s `caseClient`), never the
+ * shared run-wide one, so this sequence's session cookie can't be
+ * overwritten by a concurrent, unrelated request for a different case.
+ */
+async function searchForCa(
+  lockClient: HttpClient, execClient: HttpClient, number: string,
+): Promise<{ idProcessoTrf: number; ca: string }> {
+  return runExclusive(lockClient, async () => {
+    const session = await startSession(execClient)
+    const outcome = await search(execClient, session, { number })
     const row = outcome.rows.find((r) => r.number === number)
     if (!row) throw new CaseNotFoundError(number)
     return { idProcessoTrf: row.idProcessoTrf, ca: row.ca }
@@ -139,14 +145,16 @@ async function searchForCa(client: HttpClient, number: string): Promise<{ idProc
 }
 
 /** Resolves a target to an id and whatever `ca` is already on file for it (a cache, not a fact — see `fetchDetail`). */
-async function resolveTarget(deps: DeepDeps, target: DeepTarget): Promise<{ idProcessoTrf: number; ca: string | null }> {
+async function resolveTarget(
+  deps: DeepDeps, execClient: HttpClient, target: DeepTarget,
+): Promise<{ idProcessoTrf: number; ca: string | null }> {
   if (target.kind === 'id') {
     const stored = getCaseById(deps.db, target.id)
     return { idProcessoTrf: target.id, ca: stored?.ca ?? null }
   }
   const stored = getCaseByNumber(deps.db, target.number)
   if (stored) return { idProcessoTrf: stored.idProcessoTrf, ca: stored.ca }
-  return searchForCa(deps.client, target.number)
+  return searchForCa(deps.client, execClient, target.number)
 }
 
 /**
@@ -157,11 +165,23 @@ async function resolveTarget(deps: DeepDeps, target: DeepTarget): Promise<{ idPr
  * only a row: their content is small enough to live in `text_content`
  * directly, with no blob write at all.
  *
- * Throws on `absent`/`transient` so the caller's per-document catch
- * handles every failure mode uniformly.
+ * A `MalformedDocumentRef` (see `detail.ts`) is never fetched at all — it
+ * throws immediately, with the raw trigger text for diagnosis, so the
+ * caller's per-document catch records it as a failure exactly like a
+ * download that failed over the wire. One row the parser couldn't make
+ * sense of must not cost every other document on the page.
+ *
+ * Otherwise throws on `absent`/`transient` so the caller's per-document
+ * catch handles every failure mode uniformly.
  */
-async function downloadOneDocument(deps: DeepDeps, idProcessoTrf: number, caseNumber: string, ref: DocumentRef): Promise<void> {
-  const result = await downloadDocument(deps.client, ref)
+async function downloadOneDocument(
+  deps: DeepDeps, execClient: HttpClient, idProcessoTrf: number, caseNumber: string, ref: DocumentRef,
+): Promise<void> {
+  if (ref.kind === 'malformed') {
+    throw new Error(`Unrecognised document link, never fetched: ${ref.raw}`)
+  }
+
+  const result = await downloadDocument(execClient, ref)
 
   if (result.kind === 'absent') {
     throw new Error(`Document ${ref.id} came back as a recognised error page: ${result.finalUrl}`)
@@ -196,7 +216,7 @@ async function downloadOneDocument(deps: DeepDeps, idProcessoTrf: number, caseNu
       docType: ref.type,
       docDate: ref.date,
       pdfKey: null,
-      textContent: result.html,
+      textContent: result.text,
     })
     return
   }
@@ -216,18 +236,31 @@ async function downloadOneDocument(deps: DeepDeps, idProcessoTrf: number, caseNu
  * recorded in `failures`) so `deepRange` can always continue with the next
  * id. A document failure never aborts the case, and a case failure never
  * aborts the range.
+ *
+ * Every request this case makes runs on `caseClient`: `deps.client` with an
+ * independent, freshly-created cookie jar (`HttpClient.withJar`), sharing
+ * the run-wide pacing/backoff so the aggregate rate limit still holds.
+ * Found live: without this, a concurrent, unrelated request for a
+ * *different* case sharing the same jar could overwrite this case's session
+ * cookie mid-sequence (between the search bridge's session GET and its
+ * search POST, or between fetching the detail page and its session-bound
+ * HTML documents), and the failure it caused looked nothing like a
+ * cookie problem — a search POST reported as "the action did not execute"
+ * with no other clue. Isolating the jar per case removes the possibility
+ * entirely rather than just narrowing the window.
  */
 export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOptions = {}): Promise<DeepCaseOutcome> {
-  const { client, db, blobs } = deps
+  const { db, blobs } = deps
+  const caseClient = deps.client.withJar(new CookieJar())
   const targetRef = target.kind === 'id' ? String(target.id) : target.number
   let idProcessoTrf: number | undefined
 
   try {
-    const resolved = await resolveTarget(deps, target)
+    const resolved = await resolveTarget(deps, caseClient, target)
     idProcessoTrf = resolved.idProcessoTrf
     let ca = resolved.ca
 
-    const report = await fetchReportPdf(client, idProcessoTrf)
+    const report = await fetchReportPdf(caseClient, idProcessoTrf)
     if (report.kind !== 'pdf') {
       throw new Error(
         report.kind === 'absent'
@@ -243,13 +276,13 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     await blobs.put(summaryKey, report.pdf)
     resolveFailure(db, 'summary_pdf', String(idProcessoTrf))
 
-    let detail = ca ? await fetchDetail(client, ca) : null
+    let detail = ca ? await fetchDetail(caseClient, ca) : null
     if (!detail || detail.kind !== 'valid') {
       // `ca` is absent or the detail page said it's stale: re-derive it
       // through the search bridge and update the stored value.
-      const bridged = await searchForCa(client, record.number)
+      const bridged = await searchForCa(deps.client, caseClient, record.number)
       ca = bridged.ca
-      detail = await fetchDetail(client, ca)
+      detail = await fetchDetail(caseClient, ca)
       if (detail.kind !== 'valid') {
         throw new Error(`Detail page for case ${record.number} is still invalid right after refreshing ca.`)
       }
@@ -266,7 +299,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
         continue
       }
       try {
-        await downloadOneDocument(deps, idProcessoTrf, record.number, docRef)
+        await downloadOneDocument(deps, caseClient, idProcessoTrf, record.number, docRef)
         stored++
         // This document may have failed on an earlier run; it just
         // succeeded, so any such record is no longer accurate (mirrors

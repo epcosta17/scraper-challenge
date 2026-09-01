@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import * as cheerio from 'cheerio'
 import { HttpClient, decodeLatin1 } from '../http/client.ts'
 import { HOST, detailUrl } from './urls.ts'
@@ -15,21 +16,71 @@ export interface BinaryDocumentRef {
 
 export interface HtmlDocumentRef {
   kind: 'html'
+  /**
+   * The document's id within the case's file: the real `idProcessoDoc` when
+   * the trigger carried one, otherwise a synthetic id derived from the case
+   * number and label (see `syntheticDocId`) — never `null`, so every other
+   * part of the pipeline (`isDocumentDownloaded`, `upsertDocument`, progress
+   * reporting) can treat every `DocumentRef` uniformly.
+   */
   id: number
-  /** 112-hex, session-bound — only valid with the client that fetched the detail page. */
+  /** 112-hex, session-bound and short-lived — see `documentHtmlUrl`. */
   ca: string
+  /**
+   * The real `idProcessoDoc` query param, when the trigger had one. `null`
+   * for a case's procedural-movement timeline, which links to a document
+   * this same way but never carries this param (see `parseDetailPage`) —
+   * `documentHtmlUrl` must omit the param entirely in that case, not pass a
+   * placeholder.
+   */
+  idProcessoDoc: number | null
   label: string
   date: string | null
   type: string | null
 }
 
-export type DocumentRef = BinaryDocumentRef | HtmlDocumentRef
+/**
+ * A document-shaped link/trigger whose structure this parser doesn't
+ * recognise — a portal shape change distinct from either known document
+ * variant. Carries enough of the raw trigger (`raw`) to diagnose what
+ * changed. Never downloaded: the caller records it as a per-document
+ * failure and moves on, exactly like a download that failed over the wire —
+ * one unparseable row must not cost every other document on the page (see
+ * `crawl/deep.ts`).
+ */
+export interface MalformedDocumentRef {
+  kind: 'malformed'
+  id: number
+  raw: string
+  label: string
+}
 
-export class MalformedDocumentLinkError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'MalformedDocumentLinkError'
-  }
+export type DocumentRef = BinaryDocumentRef | HtmlDocumentRef | MalformedDocumentRef
+
+// A real case page always prints the CNJ case number; the expired/invalid-ca
+// page never does (see `fetchDetail` below). Declared here, not just near
+// `fetchDetail`, because `parseDetailPage` also needs it: the case number is
+// half of the synthetic id it derives for a document with no `idProcessoDoc`
+// of its own (see `syntheticDocId`).
+const CASE_NUMBER_RE = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/
+
+/**
+ * Deterministically derives a document id from arbitrary text, for the two
+ * shapes that carry no real `idProcessoDoc` to key off: a procedural-
+ * movement HTML trigger (case number + label — both stable across re-fetches,
+ * unlike that trigger's own ephemeral `ca`) and a malformed link (its raw
+ * trigger text, so at least identical failures collapse to one row rather
+ * than growing `failures` without bound).
+ *
+ * Offset well above any real `idProcessoDocumento` observed in the wild
+ * (a few million) so a synthetic and a real id can never collide in the
+ * `documents` table's primary key. Folding 6 bytes of the digest keeps the
+ * result a safe JS/SQLite integer (< 2^53) while remaining effectively
+ * collision-free for this dataset's size.
+ */
+function syntheticDocId(input: string): number {
+  const digest = createHash('sha256').update(input).digest()
+  return 1_000_000_000_000 + digest.readUIntBE(0, 6)
 }
 
 const LABEL_RE = /(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})\s*-\s*.+?\s*\(([^()]+)\)\s*$/
@@ -55,19 +106,29 @@ function parseLabel(rawText: string): { label: string; date: string | null; type
   return { label, date, type: m[2]!.trim() }
 }
 
+// Captures the session-bound `ca` and, optionally, the real `idProcessoDoc`.
+// Found live (case 0013478-88.2026.4.05.0000): a case's own procedural-
+// movement timeline links to one of its documents through this exact same
+// endpoint and a same-shaped 112-hex `ca`, but never carries `idProcessoDoc`
+// at all — that param belongs to the document, not the movement, and
+// appending any value for it (even the right document's real id) breaks the
+// fetch outright (see `documentHtmlUrl`). Matching it as optional, rather
+// than requiring it, is what tells the two apart.
+const HTML_TRIGGER_RE = /documentoSemLoginHTML\.seam\?ca=([0-9a-f]{112})(?:&idProcessoDoc=(\d+))?/
+
 /**
  * Parses a case detail page into its document list. Cheerio decodes HTML
  * entities for us (`&ccedil;` -> `ç`), so labels come out correctly
  * accented even though the page itself is ISO-8859-1.
  *
- * A link matching the binary/HTML shape but missing a param this parser
- * relies on to build a working download URL is a portal shape change, not
- * an absent document — it throws rather than silently dropping the row
- * (same philosophy as the dropped-row check in `search.ts`).
+ * A link that looks document-shaped but doesn't match either known variant
+ * becomes a `MalformedDocumentRef` rather than being silently dropped or
+ * aborting the whole page — see that type's doc comment for why.
  */
 export function parseDetailPage(html: string): DocumentRef[] {
   const $ = cheerio.load(html)
   const documents: DocumentRef[] = []
+  const caseNumber = CASE_NUMBER_RE.exec(html)?.[0] ?? 'unknown-case'
 
   $('a[href*="idBin="]').each((_, el) => {
     const href = $(el).attr('href')
@@ -76,31 +137,26 @@ export function parseDetailPage(html: string): DocumentRef[] {
     const idBin = url.searchParams.get('idBin')
     const numeroDocumento = url.searchParams.get('numeroDocumento')
     const id = url.searchParams.get('idProcessoDocumento')
-    if (!idBin || !numeroDocumento || !id) {
-      throw new MalformedDocumentLinkError(
-        `Binary document link is missing idBin/numeroDocumento/idProcessoDocumento: ${href}`,
-      )
-    }
     const { label, date, type } = parseLabel($(el).text())
+    if (!idBin || !numeroDocumento || !id) {
+      documents.push({ kind: 'malformed', id: syntheticDocId(href), raw: href, label })
+      return
+    }
     documents.push({ kind: 'binary', id: Number(id), idBin: Number(idBin), numeroDocumento, label, date, type })
   })
 
   $('[onclick*="documentoSemLoginHTML.seam"]').each((_, el) => {
     const onclick = $(el).attr('onclick') ?? ''
-    // Captured live (see `tests/fixtures/detail-with-movement-popups.html`):
-    // the case timeline's own "view movement" popups (id like
-    // `processoEvento:N:...`) reuse this exact same endpoint and `ca`, but
-    // never carry `idProcessoDoc` — they open a procedural movement, not a
-    // document. Only an element that actually carries `idProcessoDoc` is a
-    // document trigger at all; one missing it entirely is silently skipped
-    // rather than treated as a malformed document link.
-    if (!onclick.includes('idProcessoDoc=')) return
-    const m = /documentoSemLoginHTML\.seam\?ca=([0-9a-f]+)&idProcessoDoc=(\d+)/.exec(onclick)
-    if (!m) {
-      throw new MalformedDocumentLinkError(`HTML document trigger is missing ca/idProcessoDoc: ${onclick}`)
-    }
     const { label, date, type } = parseLabel($(el).text())
-    documents.push({ kind: 'html', id: Number(m[2]), ca: m[1]!, label, date, type })
+    const m = HTML_TRIGGER_RE.exec(onclick)
+    if (!m) {
+      documents.push({ kind: 'malformed', id: syntheticDocId(onclick), raw: onclick, label })
+      return
+    }
+    const ca = m[1]!
+    const idProcessoDoc = m[2] ? Number(m[2]) : null
+    const id = idProcessoDoc ?? syntheticDocId(`${caseNumber}|${label}`)
+    documents.push({ kind: 'html', id, ca, idProcessoDoc, label, date, type })
   })
 
   return documents
@@ -120,14 +176,13 @@ export class UnrecognisedDetailPageError extends Error {
   }
 }
 
-// A real case page always prints the CNJ case number; the expired/invalid-ca
-// page (see `tests/fixtures/detail-invalid-ca.html`, captured live from a
-// 48-hex string of `a`s) never does, and instead prints this line. Checking
-// the positive marker first means a portal-wide shape change — neither
-// marker present — surfaces as a loud, distinct failure rather than being
-// silently read as "invalid ca" (which would otherwise churn the search
-// bridge forever) or "valid" with zero documents.
-const CASE_NUMBER_RE = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/
+// The expired/invalid-ca page (see `tests/fixtures/detail-invalid-ca.html`,
+// captured live from a 48-hex string of `a`s) never prints a case number,
+// and instead prints this line. Checking the positive marker first means a
+// portal-wide shape change — neither marker present — surfaces as a loud,
+// distinct failure rather than being silently read as "invalid ca" (which
+// would otherwise churn the search bridge forever) or "valid" with zero
+// documents.
 const ACCESS_DENIED_MARKER = 'Acesso negado!'
 
 /**
