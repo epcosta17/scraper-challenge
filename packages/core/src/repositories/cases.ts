@@ -78,8 +78,8 @@ function runUpsert(db: Db, c: StoredCase): void {
       court = excluded.court,
       panel = excluded.panel,
       distributed_at = excluded.distributed_at,
-      subjects_json = excluded.subjects_json,
-      parties_json = excluded.parties_json,
+      subjects_json = CASE WHEN excluded.subjects_json = '[]' THEN cases.subjects_json ELSE excluded.subjects_json END,
+      parties_json = CASE WHEN excluded.parties_json = '[]' THEN cases.parties_json ELSE excluded.parties_json END,
       summary_pdf_key = COALESCE(excluded.summary_pdf_key, cases.summary_pdf_key),
       last_scraped_at = datetime('now')
   `).run({

@@ -71,6 +71,32 @@ describe('cases repository', () => {
     expect(err.number).toBe(sample.number)
     expect(err.idProcessoTrf).toBe(999999)
   })
+
+  it('keeps stored parties when a re-upsert carries an empty parties array', () => {
+    upsertCase(db, sample)
+    upsertCase(db, { ...sample, parties: [] })
+    expect(getCaseById(db, sample.idProcessoTrf)!.parties).toEqual(sample.parties)
+  })
+
+  it('overwrites parties when a re-upsert carries a different non-empty parties array', () => {
+    upsertCase(db, sample)
+    const newParties = [{ name: 'NEW PARTY', role: 'AGRAVADO' }]
+    upsertCase(db, { ...sample, parties: newParties })
+    expect(getCaseById(db, sample.idProcessoTrf)!.parties).toEqual(newParties)
+  })
+
+  it('keeps stored subjects when a re-upsert carries an empty subjects array', () => {
+    upsertCase(db, sample)
+    upsertCase(db, { ...sample, subjects: [] })
+    expect(getCaseById(db, sample.idProcessoTrf)!.subjects).toEqual(sample.subjects)
+  })
+
+  it('overwrites subjects when a re-upsert carries a different non-empty subjects array', () => {
+    upsertCase(db, sample)
+    const newSubjects = ['DIREITO PENAL (100)']
+    upsertCase(db, { ...sample, subjects: newSubjects })
+    expect(getCaseById(db, sample.idProcessoTrf)!.subjects).toEqual(newSubjects)
+  })
 })
 
 describe('probes repository', () => {
