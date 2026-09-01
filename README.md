@@ -91,6 +91,21 @@ Failed:  0   (recorded in the failures table for retry)
 Last id: 130102
 ```
 
+While it runs, `crawl`/`daily` print a periodic progress line to **stderr**
+(never stdout — see *Progress output* below) roughly every 2 seconds of
+wall-clock time, showing how many ids have been checked, the id currently in
+flight, and the running counts:
+
+```
+… 40 ids checked (at id 130139)  stored=39 absent=0 failed=1
+```
+
+A fixed time interval, not a fixed number of ids, is what bounds the silence:
+throughput swings a lot with `--concurrency` and how often the portal 429s, so
+counting ids can't guarantee the terminal stays quiet for only a bounded
+stretch the way a wall-clock interval does. `--verbose` trades that periodic
+line for the existing one-line-per-id log instead (see *Progress output*).
+
 Omit `--from-id` to resume automatically from the highest id already stored in
 the database (`MAX(id_processo_trf)` — see *How resuming works* below). Omit
 `--to-id` to run until 50 consecutive misses in a row, which is the crawl's
@@ -163,9 +178,23 @@ whenever a still-valid `ca` is already on file, see below) + 1 detail page +
 ~9 documents, based on the case used to build this feature. A single failed
 document does not abort the case, and a single failed case does not abort a
 range — both are recorded in `failures` (kind `deep_case` or `document`) and
-the run continues. `--verbose` logs per-document progress as it happens;
-`--dry-run` prints the plan without touching the network, the database, or
-disk, exactly like `crawl`.
+the run continues. `--dry-run` prints the plan without touching the network,
+the database, or disk, exactly like `crawl`.
+
+For a `--from-id`/`--to-id` range, `deep` prints one line to **stderr** as
+each case *finishes* — a case's own chain (summary PDF, search bridge, detail
+page, then every document) is otherwise silent for several seconds, and a
+large range would otherwise go quiet for hours:
+
+```
+[1/3] 0800120-05.2024.4.05.8306  9 documents (9 new)
+[2/3] 0013478-88.2026.4.05.0000  3 documents (3 new)
+[3/3] 0005425-26.2026.4.05.8308  2 documents (2 new)
+```
+
+A failed case is reported here too, at its own position, not only in the
+final summary. See *Progress output* below for `--verbose` and the
+stdout/stderr split.
 
 **Documents come in two shapes.** Binary documents (PDFs) are plain download
 links and work cold, with no session required; each is written to
@@ -251,6 +280,45 @@ A case can be placed under judicial secrecy after being public, or a
 previously sealed case can later become public, so treating an old miss as
 permanently settled would mean never noticing either transition.
 
+### Progress output
+
+Every command that touches the network prints progress to **stderr** and
+its actual result to **stdout** — so `--json` (and any other piping of the
+final output) always stays clean, no matter how much progress a run prints
+alongside it. By default, without `--verbose`, each command stays *alive but
+quiet*: `deep` prints one line per case as it finishes (see above), and
+`crawl`/`daily` print a periodic line every ~2 seconds (see above) — enough
+to tell the run apart from a hung one, without a line per id.
+
+`--verbose` adds the detail that's otherwise missing while a `deep` case is
+still in progress — the chain (summary PDF, search bridge if the cached `ca`
+needs refreshing, detail page, then every document) can otherwise sit silent
+for several seconds before anything is reported at all. Each step is named
+as it starts, followed by one line per document as it's stored, skipped, or
+fails:
+
+```
+130105
+  → summary PDF
+  → resolving ca (search bridge)
+  → detail page: 9 documents
+  + document id=12102067 (binary) stored
+  + document id=12102059 (binary) stored
+  ...
+Case 0800120-05.2024.4.05.8306 (id 130105):
+  Documents stored:  9
+  Documents skipped: 0   (already downloaded)
+  Documents failed:  0   (recorded in the failures table for retry)
+```
+
+(The header line is whatever target `deep` started from — an internal id for
+a `--from-id`/`--to-id` range, since the case number itself isn't known
+until the summary PDF has been parsed.) `--concurrency` above 1 interleaves
+these lines across cases running at once, same as it always has for
+per-document lines — lower `--concurrency` to `1` for a strictly sequential
+trace. For `crawl`/`daily`, `--verbose` keeps the existing one line per id
+instead of the periodic line.
+
 ## Flags
 
 **Search filters** (mirror the website's form; used by `search`):
@@ -293,8 +361,8 @@ stored watermark.
 | `--rate <n>` | Requests per second (default: 2) |
 | `--db <path>` | SQLite file (default: `data/pje.db`) |
 | `--out <path>` | PDF directory (default: `data/pdfs`) |
-| `--json` | Machine-readable output |
-| `--verbose` | Per-id progress logging during `crawl`/`daily` — no effect on `search` |
+| `--json` | Machine-readable output on stdout (progress, if any, stays on stderr — see *Progress output*) |
+| `--verbose` | Fuller progress: per-step/per-document detail for `deep`, per-id lines for `crawl`/`daily` — no effect on `search` (see *Progress output*) |
 | `--dry-run` | Plan the work without touching the network, the database, or disk |
 
 **Top-level** (stand alone, in place of a command):
