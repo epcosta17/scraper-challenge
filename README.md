@@ -306,10 +306,47 @@ stored watermark.
 
 ## Where output lands
 
-- **`data/pje.db`** — a SQLite database with `cases`, `documents` (one row per
-  document `deep` has downloaded — a binary document's `pdf_key` into the
-  blob store, or an HTML document's content directly in `text_content`),
-  `probes` (confirmed-absent ids), and `failures` (retryable errors).
+- **`data/pje.db`** — a SQLite database with:
+  - **`cases`** — one row per case. Alongside number, class, court, panel,
+    distribution date and subjects (parsed from the summary PDF, by both
+    `crawl` and `deep`), three more columns come only from the case detail
+    page (`deep` only, once it has fetched that page): `jurisdiction`
+    (`TRF5` for every case observed so far), `court_address` (the deciding
+    court's postal address) and `reference_number` (a related case number,
+    when the page cites one). An existing database gains these columns
+    automatically on its next open — see *Schema migrations* below.
+  - **`parties`** — one row per participant listed on the detail page's Polo
+    Ativo/Passivo tables (`deep` only): case id, `polo` (`ativo`/`passivo`),
+    name, `document_type` (`cpf`/`cnpj`) and number, OAB registration,
+    procedural role, and situation, each split out of the page's single
+    free-text line. Both lists are paginated by the portal (a
+    Richfaces.Datascroller, never driven by this scraper); when the parsed
+    count disagrees with the page's own stated total, that's recorded as a
+    `parties`-kind row in `failures` rather than silently stored as if the
+    list were complete — the case itself still succeeds, with whatever rows
+    *were* parsed kept. Re-running a case replaces its parties rather than
+    duplicating them.
+  - **`movements`** — one row per entry in the case's procedural log:
+    case id, `position` (the log's own order), `timestamp`, `description`.
+    Populated by **both** `crawl` and `daily`, not only `deep` — the log is
+    parsed from the case's summary PDF, which every case already downloads,
+    at no extra request. This is deliberately **not** the detail page's own
+    "Movimentações do Processo" table: that table is capped by the portal
+    with no pagination control at all (found live, case
+    0800245-51.2020.4.05.8002: 15 rows shown of a stated 39), while the
+    summary PDF prints the log in full. `deep`, which fetches both sources,
+    cross-checks the PDF's count against the detail page's stated total and
+    records a `movements`-kind `failures` row if they ever disagree — the
+    signal that this assumption has broken for some case. Re-running a case
+    replaces its movements rather than duplicating them.
+  - **`documents`** — one row per document `deep` has downloaded: a binary
+    document's `pdf_key` into the blob store *and* its own `text_content`
+    (extracted from the PDF itself — the same stream-walking extractor the
+    summary PDF uses), or an HTML document's content directly in
+    `text_content` with no blob at all.
+  - **`probes`** (confirmed-absent ids) and **`failures`** (retryable or
+    otherwise notable errors — including the parties/movements truncation
+    checks above).
 - **`data/pdfs/`** — one summary PDF per case at
   `<filing-year>/<case-number>/summary.pdf`, and, once `deep` has run for
   that case, its binary documents alongside it at
@@ -326,6 +363,20 @@ stored watermark.
 
   HTML documents have no file here — their content lives only in the
   database (see above).
+
+### Schema migrations
+
+New tables are free (`CREATE TABLE IF NOT EXISTS`), but new *columns* on an
+existing table are not — SQLite has no `ADD COLUMN IF NOT EXISTS`, and a
+database from an older version of this project won't grow one on its own.
+`openDatabase` runs a small, idempotent migration step on every open
+(`migrateSchema` in `packages/core/src/schema.ts`): it checks each column
+this project has ever added to `cases` via `PRAGMA table_info` and issues an
+`ALTER TABLE ... ADD COLUMN` only for the ones actually missing. This makes
+no difference to a fresh database (`SCHEMA` already created the columns, so
+every check finds them present) and requires no separate migration command
+to run against an existing one — just open it, the normal way any command
+in this CLI already does.
 
 Both paths are created on demand under the current working directory and can
 be overridden with `--db`/`--out` — including every parent directory, so
