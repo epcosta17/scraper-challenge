@@ -87,6 +87,14 @@ export function parseDetailPage(html: string): DocumentRef[] {
 
   $('[onclick*="documentoSemLoginHTML.seam"]').each((_, el) => {
     const onclick = $(el).attr('onclick') ?? ''
+    // Captured live (see `tests/fixtures/detail-with-movement-popups.html`):
+    // the case timeline's own "view movement" popups (id like
+    // `processoEvento:N:...`) reuse this exact same endpoint and `ca`, but
+    // never carry `idProcessoDoc` — they open a procedural movement, not a
+    // document. Only an element that actually carries `idProcessoDoc` is a
+    // document trigger at all; one missing it entirely is silently skipped
+    // rather than treated as a malformed document link.
+    if (!onclick.includes('idProcessoDoc=')) return
     const m = /documentoSemLoginHTML\.seam\?ca=([0-9a-f]+)&idProcessoDoc=(\d+)/.exec(onclick)
     if (!m) {
       throw new MalformedDocumentLinkError(`HTML document trigger is missing ca/idProcessoDoc: ${onclick}`)

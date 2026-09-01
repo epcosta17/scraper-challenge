@@ -13,6 +13,7 @@ const fixture = (name: string): Buffer =>
 const detailWithDocs = fixture('detail-with-docs.html').toString('latin1')
 const detailHtmlOnly = fixture('detail-html-docs-only.html').toString('latin1')
 const detailInvalidCa = fixture('detail-invalid-ca.html').toString('latin1')
+const detailWithMovementPopups = fixture('detail-with-movement-popups.html').toString('latin1')
 
 function clientReturning(body: string, status = 200, url = 'https://x/listView.seam') {
   const fetchImpl = (async () => {
@@ -65,6 +66,19 @@ describe('parseDetailPage', () => {
     const docs = parseDetailPage(detailHtmlOnly)
     expect(docs.filter((d) => d.kind === 'binary')).toHaveLength(0)
     expect(docs.filter((d) => d.kind === 'html')).toHaveLength(2)
+  })
+
+  // Captured live from case 0013478-88.2026.4.05.0000: its timeline has five
+  // "view movement" popups that reuse the exact same documentoSemLoginHTML.seam
+  // endpoint and ca as the one real document on the page, but never carry
+  // idProcessoDoc. Treating every one of them as a document (or worse,
+  // throwing on the first one for "missing" a param it was never going to
+  // have) would either fabricate four documents that don't exist or abort a
+  // real case outright.
+  it('skips timeline "view movement" popups that reuse the document endpoint without idProcessoDoc', () => {
+    const docs = parseDetailPage(detailWithMovementPopups)
+    expect(docs).toHaveLength(1)
+    expect(docs[0]).toMatchObject({ kind: 'html', id: 12114281 })
   })
 
   it('throws on a binary link missing a required parameter instead of silently dropping it', () => {
