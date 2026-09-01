@@ -6,7 +6,7 @@
   "workspaces": ["packages/*"],
   "engines": { "node": ">=22" },
   "scripts": {
-    "build": "tsc --build",
+    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/scraper",
     "test": "vitest run",
     "test:watch": "vitest",
     "scraper": "node --experimental-strip-types packages/scraper/src/cli.ts",
