@@ -94,6 +94,43 @@ CREATE TABLE IF NOT EXISTS failures (
   resolved_at     TEXT,
   UNIQUE (kind, ref)
 );
+
+-- The work queue: a web front end enqueues, one or more external workers
+-- drain it. Distinct from \`failures\`, which is a record of what went wrong
+-- during a run that already happened; this is a record of what has yet to
+-- happen.
+--
+-- \`status\` carries a CHECK because its four values are the whole state
+-- machine \`claimNextJob\`/\`completeJob\`/\`failJob\` implement — a fifth one
+-- could only ever be a bug, and a job stuck in an unknown state is invisible
+-- to every query the workers run. \`type\` deliberately carries no CHECK: the
+-- set of job types is expected to grow, and SQLite cannot alter a CHECK
+-- constraint without rebuilding the table, so encoding that list here would
+-- turn "add a job type" into a migration. It is constrained in TypeScript
+-- (\`JobType\`) instead, where it costs nothing to extend.
+--
+-- \`started_at\`/\`finished_at\` describe the *current* attempt, not the first
+-- one: a retry clears them (see \`failJob\`), so "pending with attempts = 2"
+-- reads as what it is.
+CREATE TABLE IF NOT EXISTS jobs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  type         TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'running', 'done', 'failed')),
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL,
+  started_at   TEXT,
+  finished_at  TEXT,
+  error        TEXT
+);
+
+-- The index \`claimNextJob\` rides: its inner SELECT is
+-- \`WHERE status = 'pending' [AND type IN (...)] ORDER BY id LIMIT 1\`, which
+-- this turns into a single b-tree seek rather than a scan over a queue that
+-- is mostly finished rows.
+CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, id);
+CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status, id);
 `
 
 /**

@@ -20,6 +20,14 @@ export function openDatabase(path: string): Db {
   const db = new Database(path)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  // WAL allows many readers alongside one writer, but two writers still
+  // serialise on the write lock, and the loser gets SQLITE_BUSY *unless*
+  // it is willing to wait. This is what makes `claimNextJob` block-and-retry
+  // across concurrent worker processes instead of throwing at whichever one
+  // arrived second. better-sqlite3 already applies its own 5s default; the
+  // pragma is here because the queue depends on it, and a default that
+  // silently changed would be a very confusing bug to chase.
+  db.pragma('busy_timeout = 5000')
   db.exec(SCHEMA)
   // Adds columns a pre-existing database (created before this migration
   // existed) is missing — see `migrateSchema`'s own doc comment for why
