@@ -2,7 +2,7 @@ import { HttpClient } from '../http/client.ts'
 import { reportPdfUrl } from './urls.ts'
 
 export type ReportResult =
-  | { kind: 'pdf'; pdf: Buffer }
+  | { kind: 'pdf'; pdf: Buffer; headers: Headers; finalUrl: string }
   | { kind: 'absent'; finalUrl: string }
   | { kind: 'transient'; status: number; finalUrl: string }
 
@@ -61,13 +61,25 @@ const TRANSIENT_RETRY_DELAY_MS = 500
  * Requires no session: the endpoint works cold, without cookies.
  */
 export async function fetchReportPdf(client: HttpClient, id: number): Promise<ReportResult> {
+  return fetchClassifiedPdf(client, reportPdfUrl(id))
+}
+
+/**
+ * The classification loop `fetchReportPdf` runs, generalised to any URL that
+ * serves this same three-shape response (a PDF, the known error.seam page,
+ * or anything else): the summary report endpoint above, and — reused rather
+ * than duplicated — the binary document download endpoint in `download.ts`.
+ * See `fetchReportPdf`'s doc comment for what each outcome means and why the
+ * retry exists.
+ */
+export async function fetchClassifiedPdf(client: HttpClient, url: string): Promise<ReportResult> {
   let last: { status: number; finalUrl: string } | undefined
 
   for (let attempt = 0; attempt <= TRANSIENT_RETRIES; attempt++) {
-    const res = await client.request(reportPdfUrl(id))
+    const res = await client.request(url)
 
     if (res.body.subarray(0, 5).toString('latin1') === PDF_MAGIC) {
-      return { kind: 'pdf', pdf: res.body }
+      return { kind: 'pdf', pdf: res.body, headers: res.headers, finalUrl: res.url }
     }
     if (res.status === 200 && looksLikeErrorSeam(res.url, res.body)) {
       return { kind: 'absent', finalUrl: res.url }
