@@ -1,0 +1,169 @@
+import { HttpClient, decodeLatin1 } from '../http/client.ts'
+import type { PjeSession } from './session.ts'
+
+export interface SearchFilters {
+  number?: string
+  from?: string
+  to?: string
+  class?: string
+  party?: string
+  lawyer?: string
+  document?: string
+  documentType?: 'cpf' | 'cnpj'
+  oab?: string
+  oabState?: string
+  reference?: string
+}
+
+export class SearchValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SearchValidationError'
+  }
+}
+
+export class ActionNotExecutedError extends Error {
+  constructor() {
+    super(
+      'The search action did not execute (only the message panel re-rendered). ' +
+      'This usually means the submit parameter is stale — re-read it from the page.',
+    )
+    this.name = 'ActionNotExecutedError'
+  }
+}
+
+const DATE_RE = /^\d{2}\/\d{2}\/\d{4}$/
+
+/** Fails fast on inputs the server would silently ignore or reject. */
+export function validateFilters(f: SearchFilters): void {
+  const twoTokens = (v: string) => v.trim().split(/\s+/).filter(Boolean).length >= 2
+
+  if (f.party !== undefined && !twoTokens(f.party)) {
+    throw new SearchValidationError(
+      '--party requires at least two names; the server rejects a single token.',
+    )
+  }
+  if (f.lawyer !== undefined && !twoTokens(f.lawyer)) {
+    throw new SearchValidationError(
+      '--lawyer requires at least two names; the server rejects a single token.',
+    )
+  }
+  if (f.oabState && !f.oab) {
+    throw new SearchValidationError(
+      '--oab-state has no effect without --oab; the server ignores it silently.',
+    )
+  }
+  for (const [flag, value] of [['--from', f.from], ['--to', f.to]] as const) {
+    if (value !== undefined && !DATE_RE.test(value)) {
+      throw new SearchValidationError(`${flag} must be dd/mm/yyyy, got "${value}".`)
+    }
+  }
+}
+
+const monthYear = (d: Date): string =>
+  `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`
+
+/**
+ * Builds the full form payload.
+ *
+ * Both `*InputCurrentDate` fields must always carry a valid MM/YYYY. If they
+ * are empty the RichFaces calendar fails to decode and JSF drops the date
+ * filter entirely, returning unrelated results with no error.
+ */
+export function buildSearchPayload(
+  session: PjeSession,
+  f: SearchFilters,
+  today: Date = new Date(),
+): Record<string, string> {
+  const cur = monthYear(today)
+  const payload: Record<string, string> = {
+    'AJAXREQUEST': '_viewRoot',
+    'fPP:numProcesso-inputNumeroProcessoDecoration:numProcesso-inputNumeroProcesso': f.number ?? '',
+    'fPP:dnp:nomeParte': f.party ?? '',
+    'fPP:dpDec:documentoParte': f.document ?? '',
+    'tipoMascaraDocumento': f.documentType ?? 'cpf',
+    'fPP:j_id180:nomeAdv': f.lawyer ?? '',
+    'fPP:Decoration:numeroOAB': f.oab ?? '',
+    'fPP:Decoration:estadoComboOAB':
+      f.oabState ?? 'org.jboss.seam.ui.NoSelectionConverter.noSelectionValue',
+    'fPP:j_id189:classeJudicial': f.class ?? '',
+    'fPP:j_id162:processoReferenciaInput': f.reference ?? '',
+    'mascaraProcessoReferenciaRadio': 'on',
+    'fPP:dataAutuacaoDecoration:dataAutuacaoInicioInputDate': f.from ?? '',
+    'fPP:dataAutuacaoDecoration:dataAutuacaoInicioInputCurrentDate': cur,
+    'fPP:dataAutuacaoDecoration:dataAutuacaoFimInputDate': f.to ?? '',
+    'fPP:dataAutuacaoDecoration:dataAutuacaoFimInputCurrentDate': cur,
+    'fPP': 'fPP',
+    'autoScroll': '',
+    'javax.faces.ViewState': 'j_id1',
+    'AJAX:EVENTS_COUNT': '1',
+  }
+  payload[session.submitParam] = session.submitParam
+  return payload
+}
+
+const ROW_RE = /id="fPP:processosTable:(\d+):/g
+const NUMBER_RE = /(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})/
+const CA_RE = /listView\.seam\?ca=([0-9a-f]{48})/
+
+export interface SearchRow {
+  idProcessoTrf: number
+  number: string
+  ca: string
+}
+
+export interface SearchOutcome {
+  rows: SearchRow[]
+  /** True when the server said it truncated the result set at 30. */
+  capped: boolean
+}
+
+export function parseSearchResponse(xml: string): SearchOutcome {
+  const updateIds = [...xml.matchAll(/Ajax-Update-Ids"\s+content="([^"]*)"/g)].map((m) => m[1]!)
+  if (updateIds.length > 0 && !updateIds.some((id) => id.includes('processosGridPanel'))) {
+    throw new ActionNotExecutedError()
+  }
+
+  // Each row is announced by one or more `id="fPP:processosTable:<idProcessoTrf>:..."`
+  // markers. Collect the first offset each id appears at, once, then slice the
+  // document between consecutive first-offsets instead of re-scanning per id.
+  const firstOffset = new Map<number, number>()
+  for (const m of xml.matchAll(ROW_RE)) {
+    const id = Number(m[1])
+    if (!firstOffset.has(id)) firstOffset.set(id, m.index)
+  }
+  const boundaries = [...firstOffset.entries()].sort((a, b) => a[1] - b[1])
+
+  const rows: SearchRow[] = []
+  for (let i = 0; i < boundaries.length; i++) {
+    const [id, start] = boundaries[i]!
+    const end = boundaries[i + 1]?.[1] ?? xml.length
+    const chunk = xml.slice(start, end)
+    const number = NUMBER_RE.exec(chunk)?.[1]
+    const ca = CA_RE.exec(chunk)?.[1]
+    if (number && ca) rows.push({ idProcessoTrf: id, number, ca })
+  }
+
+  return { rows, capped: xml.includes('muitos processos') }
+}
+
+export async function search(
+  client: HttpClient,
+  session: PjeSession,
+  f: SearchFilters,
+): Promise<SearchOutcome> {
+  validateFilters(f)
+  const payload = buildSearchPayload(session, f)
+  const body = new URLSearchParams(payload).toString()
+
+  const res = await client.request(session.actionUrl, {
+    method: 'POST',
+    body,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=ISO-8859-1',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Referer': session.actionUrl,
+    },
+  })
+  return parseSearchResponse(decodeLatin1(res.body))
+}
