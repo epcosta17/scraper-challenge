@@ -23,6 +23,33 @@ function fakeServer(present: Set<number>, limited = new Set<number>()) {
   return new HttpClient({ fetchImpl: impl, sleep: async () => {}, rps: 0, backoff: { maxAttempts: 2 } })
 }
 
+/**
+ * Serves a PDF for ids in `present`; a permanent 200+HTML "absent" for ids
+ * in `absent`; and a permanent 404+HTML "transient failure" for every other
+ * id — mirroring the two different non-PDF shapes the live portal actually
+ * returns (see `fetchReportPdf`).
+ */
+function fakeServerWithTransientIds(present: Set<number>, absent: Set<number>) {
+  const impl = (async (url: string | URL) => {
+    const id = Number(new URL(String(url)).searchParams.get('idProcessoTrf'))
+    if (present.has(id)) {
+      const r = new Response(realPdf, { status: 200 })
+      Object.defineProperty(r, 'url', { value: 'https://x/document.seam' })
+      return r
+    }
+    if (absent.has(id)) {
+      const r = new Response(errorHtml, { status: 200 })
+      Object.defineProperty(r, 'url', { value: 'https://x/error.seam' })
+      return r
+    }
+    // Not 200, not a PDF: the portal's transient-failure shape.
+    const r = new Response(errorHtml, { status: 404 })
+    Object.defineProperty(r, 'url', { value: 'https://x/error.seam' })
+    return r
+  }) as unknown as typeof fetch
+  return new HttpClient({ fetchImpl: impl, sleep: async () => {}, rps: 0 })
+}
+
 let dir: string
 let db: ReturnType<typeof openDatabase>
 let blobs: FsBlobStore
@@ -54,6 +81,40 @@ describe('crawl', () => {
     await crawl({ client, db, blobs }, { fromId: 10, toId: 12, concurrency: 1 })
     expect(getProbedIds(db)).toEqual(new Set([10, 11, 12]))
     expect(listFailures(db)).toHaveLength(0)
+  })
+
+  // These two tests encode the whole point of the fix: the portal produces
+  // two different non-PDF responses, and only one of them is a genuine
+  // miss. Confusing them either loses real cases (filing a transient
+  // failure as an untried, never-retried "absent") or pollutes retries
+  // with ids that will never exist.
+  describe('transient failure vs. genuine absence', () => {
+    it('records a persistently transient id as a failure, not a probe, and keeps going past it', async () => {
+      // id 20 is neither `present` nor `absent`, so the fake server serves
+      // it a permanent 404+HTML — the portal's observed transient-failure
+      // shape — on every attempt, including every retry inside
+      // `fetchReportPdf`.
+      const client = fakeServerWithTransientIds(new Set([21]), new Set())
+      const summary = await crawl({ client, db, blobs }, { fromId: 20, toId: 21, concurrency: 1 })
+
+      expect(listFailures(db).map((f) => f.ref)).toEqual(['20'])
+      expect(getProbedIds(db)).toEqual(new Set())
+      // The crawl did not stop or skip id 21 — it stored the case right
+      // after the transient failure.
+      expect(summary).toEqual({ stored: 1, absent: 0, failed: 1, lastId: 21 })
+    })
+
+    it('records a genuinely absent id as a probe, not a failure', async () => {
+      // id 22 is explicitly `absent`: the fake server serves a stable
+      // HTTP 200 + HTML "error.seam" page, the portal's real error.seam
+      // shape for an unassigned or sealed case.
+      const client = fakeServerWithTransientIds(new Set(), new Set([22]))
+      const summary = await crawl({ client, db, blobs }, { fromId: 22, toId: 22, concurrency: 1 })
+
+      expect(getProbedIds(db)).toEqual(new Set([22]))
+      expect(listFailures(db)).toHaveLength(0)
+      expect(summary).toEqual({ stored: 0, absent: 1, failed: 0, lastId: 22 })
+    })
   })
 
   it('records a persistent 429 as a failure and keeps going', async () => {

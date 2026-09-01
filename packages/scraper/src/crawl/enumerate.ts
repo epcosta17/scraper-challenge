@@ -55,8 +55,11 @@ export function pdfKeyFor(record: { number: string }): string {
  *  - `stored`: the PDF parsed and the case was upserted.
  *  - `absent`: the id yielded no PDF (unassigned or sealed) — recorded as a
  *    probe, not a failure, because roughly 15% of ids are expected misses.
- *  - `failed`: a 429 that survived every retry, or a malformed PDF —
- *    recorded as a failure. The crawl continues past it.
+ *  - `failed`: a 429 that survived every retry, a malformed PDF, or a
+ *    transient server failure (a non-absent, non-PDF response that
+ *    survived every retry inside `fetchReportPdf`) — recorded as a
+ *    failure, not a probe, because unlike a genuine absence it is expected
+ *    to succeed on a later run. The crawl continues past it.
  */
 export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlSummary> {
   const { client, db, blobs } = deps
@@ -124,6 +127,15 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
         recordProbe(db, id, 'not_found')
         absent++
         outcome = 'absent'
+      } else if (result.kind === 'transient') {
+        // Not a genuine miss: the id survived every retry inside
+        // `fetchReportPdf` but still never came back as either a PDF or a
+        // stable 200+HTML absence. Record it as a *failure*, not a probe —
+        // a probe is never revisited, and this id is expected to succeed
+        // on a later run once the flaky backend node recovers.
+        recordFailure(db, 'summary_pdf', String(id), `Transient HTTP ${result.status} from ${result.finalUrl}`)
+        failed++
+        outcome = 'failed'
       } else {
         const record = parseCaseRecord(result.pdf)
         const key = pdfKeyFor(record)

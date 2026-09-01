@@ -50,7 +50,13 @@ export function decodeUtf8(b: Buffer): string {
 export class HttpClient {
   readonly jar: CookieJar
   private readonly fetchImpl: typeof fetch
-  private readonly sleep: (ms: number) => Promise<void>
+  /**
+   * Exposed (not just used internally for pacing/backoff) so callers layered
+   * on top — `fetchReportPdf`'s transient-retry delay, for one — can reuse
+   * the same injected clock instead of each inventing their own `sleep`
+   * option. Tests then only need to override it once, on the `HttpClient`.
+   */
+  readonly sleep: (ms: number) => Promise<void>
   private readonly minIntervalMs: number
   private readonly backoff: Partial<BackoffOptions>
   private readonly userAgent: string
