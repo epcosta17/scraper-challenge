@@ -1,5 +1,6 @@
 import type { CrawlProgress, CrawlSummary } from '../crawl/enumerate.ts'
 import type { DeepDocumentProgress, DeepCaseOutcome, DeepRangeSummary, DeepStepEvent } from '../crawl/deep.ts'
+import type { SearchFilters } from '../pje/search.ts'
 
 export function progressLine(p: CrawlProgress): string {
   const mark = p.outcome === 'stored' ? '+' : p.outcome === 'absent' ? '.' : '!'
@@ -90,4 +91,31 @@ export function cappedWarning(): string {
     "         The portal has no pagination. --partition is not implemented",
     "         in this phase; use `crawl` for complete coverage.",
   ].join('\n')
+}
+
+/**
+ * What a `--dry-run` would do, as data rather than as a sentence. Both
+ * output modes render this one object — `--json` serializes it, the default
+ * runs it through `dryRunPlanLine` below — so the plan a pipeline reads can
+ * never drift from the plan a human reads. A bound the command would have
+ * defaulted is `null`, not a missing key, so a consumer can tell "defaulted"
+ * from "given" without probing for absence.
+ */
+export type DryRunPlan =
+  | { dryRun: true; command: 'search'; filters: SearchFilters }
+  | { dryRun: true; command: 'crawl' | 'daily'; fromId: number | null; toId: number | null }
+  | { dryRun: true; command: 'deep'; target: string | null; fromId: number | null; toId: number | null }
+
+export function dryRunPlanLine(plan: DryRunPlan): string {
+  switch (plan.command) {
+    case 'search':
+      return `Would search with filters: ${JSON.stringify(plan.filters)}`
+    case 'deep':
+      return plan.target !== null
+        ? `Would deep-fetch case ${plan.target}`
+        : `Would deep-fetch every case from id ${plan.fromId} to ${plan.toId}`
+    default:
+      return `Would crawl from ${plan.fromId ?? '(database watermark)'} ` +
+             `to ${plan.toId ?? '(until 50 consecutive misses)'}`
+  }
 }

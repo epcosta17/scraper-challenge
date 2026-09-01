@@ -297,3 +297,107 @@ describe('main — progress never touches stdout, `--json` stays the only thing 
     expect(errorSpy.mock.calls.length).toBeGreaterThan(0)
   })
 })
+
+describe('main — --dry-run under --json prints a JSON plan, not prose', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+  })
+
+  /** The one thing every caller of `--json` relies on: stdout parses. */
+  function stdoutJson(): unknown {
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    return JSON.parse(String(logSpy.mock.calls[0]![0]))
+  }
+
+  it('search --dry-run --json reports the filters it would submit', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    const code = await main(
+      ['search', '--number', '0013201-41.2025.4.05.8202', '--dry-run', '--json'],
+      { fetchImpl },
+    )
+
+    expect(code).toBe(0)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(stdoutJson()).toEqual({
+      dryRun: true,
+      command: 'search',
+      filters: { number: '0013201-41.2025.4.05.8202' },
+    })
+  })
+
+  it('crawl --dry-run --json reports the id range, with nulls for the defaults', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    const code = await main(['crawl', '--dry-run', '--json'], { fetchImpl })
+
+    expect(code).toBe(0)
+    expect(stdoutJson()).toEqual({ dryRun: true, command: 'crawl', fromId: null, toId: null })
+  })
+
+  it('daily --dry-run --json names the command it actually ran', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const code = await main(['daily', '--dry-run', '--json'], { fetchImpl: vi.fn(throwingFetch()) })
+
+    expect(code).toBe(0)
+    expect(stdoutJson()).toEqual({ dryRun: true, command: 'daily', fromId: null, toId: null })
+  })
+
+  it('deep <target> --dry-run --json reports the single target', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const code = await main(
+      ['deep', '0013201-41.2025.4.05.8202', '--dry-run', '--json'],
+      { fetchImpl: vi.fn(throwingFetch()) },
+    )
+
+    expect(code).toBe(0)
+    expect(stdoutJson()).toEqual({
+      dryRun: true,
+      command: 'deep',
+      target: '0013201-41.2025.4.05.8202',
+      fromId: null,
+      toId: null,
+    })
+  })
+
+  it('deep --from-id/--to-id --dry-run --json reports the range', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const code = await main(
+      ['deep', '--from-id', '130100', '--to-id', '130102', '--dry-run', '--json'],
+      { fetchImpl: vi.fn(throwingFetch()) },
+    )
+
+    expect(code).toBe(0)
+    expect(stdoutJson()).toEqual({
+      dryRun: true,
+      command: 'deep',
+      target: null,
+      fromId: 130100,
+      toId: 130102,
+    })
+  })
+
+  it('keeps the human-readable plan lines unchanged without --json', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    await main(['crawl', '--from-id', '130100', '--to-id', '130105', '--dry-run'], { fetchImpl })
+    await main(['deep', '130100', '--dry-run'], { fetchImpl })
+    await main(['deep', '--from-id', '1', '--to-id', '2', '--dry-run'], { fetchImpl })
+    await main(['search', '--number', '0013201-41.2025.4.05.8202', '--dry-run'], { fetchImpl })
+
+    expect(logSpy.mock.calls.map((c) => String(c[0]))).toEqual([
+      'Would crawl from 130100 to 130105',
+      'Would deep-fetch case 130100',
+      'Would deep-fetch every case from id 1 to 2',
+      'Would search with filters: {"number":"0013201-41.2025.4.05.8202"}',
+    ])
+  })
+})

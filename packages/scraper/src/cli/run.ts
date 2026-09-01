@@ -9,6 +9,7 @@ import {
   progressLine, summaryLines, cappedWarning,
   deepDocumentProgressLine, deepCaseOutcomeLines, deepRangeSummaryLines,
   deepCaseProgressLine, deepStepLine, crawlPeriodicProgressLine,
+  dryRunPlanLine, type DryRunPlan,
 } from './format.ts'
 import { SCRAPER_VERSION } from '../version.ts'
 
@@ -20,6 +21,17 @@ export interface MainOptions {
 /** A bare integer is an internal idProcessoTrf; anything else is a case number, as typed. */
 function deepTargetFrom(positional: string): DeepTarget {
   return /^\d+$/.test(positional) ? { kind: 'id', id: Number(positional) } : { kind: 'number', number: positional }
+}
+
+/**
+ * Prints a `--dry-run` plan in whichever mode the run asked for. `--json`
+ * means stdout carries JSON and nothing else — a plan printed as prose there
+ * breaks the very pipeline the flag exists for — so the plan is data first
+ * and a sentence only when no machine is reading.
+ */
+function emitDryRunPlan(plan: DryRunPlan, json: boolean): number {
+  console.log(json ? JSON.stringify(plan, null, 2) : dryRunPlanLine(plan))
+  return 0
 }
 
 /**
@@ -82,8 +94,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       // worth keeping as a defence for any other caller of `search()`.
       validateFilters(args.filters)
       if (args.dryRun) {
-        console.log(`Would search with filters: ${JSON.stringify(args.filters)}`)
-        return 0
+        return emitDryRunPlan({ dryRun: true, command: 'search', filters: args.filters }, args.json)
       }
       const session = await startSession(client)
       const outcome = await search(client, session, args.filters)
@@ -104,12 +115,13 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       // positional, or a full --from-id/--to-id range.
       const isRange = args.fromId !== undefined && args.toId !== undefined
       if (args.dryRun) {
-        console.log(
-          isRange
-            ? `Would deep-fetch every case from id ${args.fromId} to ${args.toId}`
-            : `Would deep-fetch case ${args.positional[0]}`,
-        )
-        return 0
+        return emitDryRunPlan({
+          dryRun: true,
+          command: 'deep',
+          target: isRange ? null : args.positional[0]!,
+          fromId: isRange ? args.fromId! : null,
+          toId: isRange ? args.toId! : null,
+        }, args.json)
       }
 
       const db = openDatabase(args.db)
@@ -161,9 +173,12 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
     if (args.dryRun) {
       // Print the plan and stop before opening the database or the blob
       // store — a dry run must not touch disk at all.
-      console.log(`Would crawl from ${args.fromId ?? '(database watermark)'} ` +
-                  `to ${args.toId ?? '(until 50 consecutive misses)'}`)
-      return 0
+      return emitDryRunPlan({
+        dryRun: true,
+        command: args.command,
+        fromId: args.fromId ?? null,
+        toId: args.toId ?? null,
+      }, args.json)
     }
 
     const db = openDatabase(args.db)
