@@ -64,6 +64,21 @@ describe('parseCaseRecord', () => {
     expect(rec.panel).toBe('2ª Turma')
   })
 
+  it('extracts subjects with word boundaries preserved across wrapped PDF lines', () => {
+    // Recon: "Alienação" and "Fiduciária" are drawn as two separate Tj calls
+    // on two lines of the same stream. A naive literal join glues them into
+    // "AlienaçãoFiduciária" with no space; reconstructText must insert one at
+    // the Tm/Td/TD/T* boundary between them.
+    const { subjects } = parseCaseRecord(pdf)
+    expect(subjects).toContain('DIREITO CIVIL (899)')
+    expect(subjects.some((s) => s.includes('Alienação Fiduciária'))).toBe(true)
+    expect(subjects.some((s) => s.includes('AlienaçãoFiduciária'))).toBe(false)
+  })
+
+  it('extracts the distribution date', () => {
+    expect(parseCaseRecord(pdf).distributedAt).toBe('17 de Agosto de 2026')
+  })
+
   it('throws a typed error when the buffer is not a PDF', () => {
     expect(() => parseCaseRecord(Buffer.from('<html>error</html>'))).toThrow(/not a PDF/i)
   })
