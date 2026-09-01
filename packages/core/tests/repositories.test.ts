@@ -31,6 +31,23 @@ beforeEach(() => {
   return () => { db.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
+describe('openDatabase', () => {
+  it('creates a missing parent directory instead of throwing', () => {
+    // `data/` is gitignored and does not exist on a fresh clone; the default
+    // `--db data/pje.db` must not crash the very first run because of it.
+    // Go two levels deep to prove it's not just a one-shot `mkdir`.
+    const missing = join(dir, 'nested', 'deeper', 'fresh.db')
+    const fresh = openDatabase(missing)
+    try {
+      // The schema must actually be usable, not just "didn't throw".
+      upsertCase(fresh, sample)
+      expect(getCaseByNumber(fresh, sample.number)).not.toBeNull()
+    } finally {
+      fresh.close()
+    }
+  })
+})
+
 describe('cases repository', () => {
   it('round-trips a case including JSON columns', () => {
     upsertCase(db, sample)

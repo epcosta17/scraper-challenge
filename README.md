@@ -198,10 +198,11 @@ stored watermark.
   `data/pdfs/2026/0013475-36.2026.4.05.0000/summary.pdf`.
 
 Both paths are created on demand under the current working directory and can
-be overridden with `--db`/`--out`. The parent directory for `--db` must
-already exist (SQLite does not create it); `data/` is present in this
-repository for that reason. `--out`'s directory tree is created automatically
-as PDFs are written.
+be overridden with `--db`/`--out` — including every parent directory, so
+there is nothing to set up by hand even on a fresh clone (`data/` is
+gitignored and does not exist until the first run creates it). `--db`'s
+directory is created when the database is opened; `--out`'s directory tree
+is created as PDFs are written.
 
 ## Tests
 
