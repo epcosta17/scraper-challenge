@@ -103,4 +103,29 @@ describe('FsBlobStore', () => {
   it('reports a missing key as absent', async () => {
     expect(await new FsBlobStore(dir).exists('nope.pdf')).toBe(false)
   })
+
+  it('still allows an ordinary nested key', async () => {
+    const store = new FsBlobStore(dir)
+    const key = '2026/0013475-36.2026.4.05.0000/summary.pdf'
+    await store.put(key, Buffer.from('%PDF-1.4'))
+    expect(await store.exists(key)).toBe(true)
+  })
+
+  it('rejects a key of plain ../escape.txt', async () => {
+    const store = new FsBlobStore(dir)
+    await expect(store.put('../escape.txt', Buffer.from('x'))).rejects.toThrow()
+  })
+
+  it('rejects an absolute-path key', async () => {
+    const store = new FsBlobStore(dir)
+    await expect(store.put('/etc/passwot', Buffer.from('x'))).rejects.toThrow()
+  })
+
+  it('rejects a key that escapes into a sibling directory sharing the root name as a prefix', async () => {
+    // dir is something like /tmp/pje-test-XXXXXX; a sibling dir whose name
+    // merely starts with that same string must not be reachable.
+    const store = new FsBlobStore(dir)
+    const key = `../${dir.split('/').pop()}-evil/secret.txt`
+    await expect(store.put(key, Buffer.from('x'))).rejects.toThrow()
+  })
 })

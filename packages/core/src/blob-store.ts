@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /** Swappable so PDFs can move to Cloud Storage without touching callers. */
 export interface BlobStore {
@@ -12,8 +12,12 @@ export class FsBlobStore implements BlobStore {
   constructor(private readonly root: string) {}
 
   private path(key: string): string {
-    const full = resolve(join(this.root, key))
-    if (!full.startsWith(resolve(this.root))) throw new Error(`Key escapes blob root: ${key}`)
+    const resolvedRoot = resolve(this.root)
+    const full = resolve(resolvedRoot, key)
+    const rel = relative(resolvedRoot, full)
+    if (isAbsolute(rel) || rel === '..' || rel.startsWith('..' + sep)) {
+      throw new Error(`Key escapes blob root: ${key}`)
+    }
     return full
   }
 
