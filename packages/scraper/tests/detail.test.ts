@@ -15,6 +15,12 @@ const detailWithDocs = fixture('detail-with-docs.html').toString('latin1')
 const detailHtmlOnly = fixture('detail-html-docs-only.html').toString('latin1')
 const detailInvalidCa = fixture('detail-invalid-ca.html').toString('latin1')
 const detailWithMovementPopups = fixture('detail-with-movement-popups.html').toString('latin1')
+// Captured live from 0024885-29.2005.4.05.0000 (idProcessoTrf 28907) — a
+// passivo list of 40 participants spanning several Datascroller pages, only
+// the first of which renders (10 rows). This is what surfaced the
+// scroller's own page-control row being misread as an 11th, spurious
+// participant (see the `parseParties` regression test below).
+const detailPaginatedParties = fixture('detail-paginated-parties.html').toString('latin1')
 
 function clientReturning(body: string, status = 200, url = 'https://x/listView.seam') {
   const fetchImpl = (async () => {
@@ -269,6 +275,31 @@ describe('parseParties', () => {
       role: 'APELADO',
       situation: 'Ativo',
     }])
+  })
+
+  // Found live (case 0024885-29.2005.4.05.0000): a Datascroller's own
+  // page-control row (««, «, page numbers, », »» — whichever glyph is
+  // active depends on the current page) lives in a `<tr>` inside the same
+  // `tbody` as the real participant rows and was being parsed as an 11th,
+  // spurious passivo participant with no document and no role. Only 10 of
+  // this passivo table's 40 declared participants render on this page (the
+  // rest sit behind pages this scraper doesn't follow), so this also
+  // exercises the truncation check on a genuinely long, real list — the
+  // scenario flagged as under-tested against fixtures with only 1-4
+  // participants.
+  it('excludes the Datascroller control row from a paginated participant list, still reporting truncation', () => {
+    const { parties, ativoTotal, passivoTotal } = parseParties(detailPaginatedParties)
+    expect(ativoTotal).toBe(1)
+    expect(passivoTotal).toBe(40)
+    expect(parties.filter((p) => p.polo === 'ativo')).toHaveLength(1)
+    const passivo = parties.filter((p) => p.polo === 'passivo')
+    // 10 real rows, not 11 — the control row is gone.
+    expect(passivo).toHaveLength(10)
+    for (const p of passivo) {
+      expect(p.name.length).toBeGreaterThan(0)
+      expect(p.documentType !== null || p.role !== null).toBe(true)
+    }
+    expect(passivo).not.toContainEqual(expect.objectContaining({ name: '««' }))
   })
 })
 

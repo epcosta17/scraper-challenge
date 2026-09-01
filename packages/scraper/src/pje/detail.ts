@@ -302,6 +302,26 @@ function parsePartyText(raw: string, polo: PartyInput['polo'], situation: string
 }
 
 /**
+ * True for a row `parsePartyText` actually turned into a participant, false
+ * for noise. Found live (case 0024885-29.2005.4.05.0000, idProcessoTrf
+ * 28907, a 40-participant passivo list spanning multiple Datascroller
+ * pages): the scroller's own page-control row (`««`, `«`, page numbers,
+ * `»`, `»»` — whichever glyph happens to be active depends on the current
+ * page, so matching a specific one is not robust) lives in a `<tr>` inside
+ * the SAME `tbody` as the real rows and was being read as an extra,
+ * spurious participant with no document and no role.
+ *
+ * Rather than special-case scroller glyphs (liable to miss a shape change,
+ * or a future glyph), a row is kept only if it looks like a participant
+ * structurally: a non-empty name AND at least one of a document (CPF/CNPJ)
+ * or a procedural role. Every real participant observed carries at least
+ * one of those two; a scroller-control row carries neither.
+ */
+function isRealParticipant(p: PartyInput): boolean {
+  return p.name.length > 0 && (p.documentType !== null || p.role !== null)
+}
+
+/**
  * Parses one polo's participant table (`table[id$="<idSuffix>"]`, never the
  * container's own generated id — see the module-level note) into its rows
  * plus the total the page states for it, so the caller can tell a complete
@@ -328,7 +348,8 @@ function parsePartyTable($: cheerio.CheerioAPI, polo: PartyInput['polo'], idSuff
     const participantCell = $(cells[0]).clone()
     participantCell.find('script, style, ul').remove()
     const situation = collapseWhitespace($(cells[1]).text())
-    parties.push(parsePartyText(participantCell.text(), polo, situation))
+    const parsed = parsePartyText(participantCell.text(), polo, situation)
+    if (isRealParticipant(parsed)) parties.push(parsed)
   })
 
   const totalText = table.next('span.pull-right.text-muted').text().trim()
