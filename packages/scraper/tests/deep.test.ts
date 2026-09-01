@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openDatabase, FsBlobStore, upsertCase, getCaseById, getDocumentsByCase, listFailures } from '@pje/core'
+import { openDatabase, FsBlobStore, upsertCase, getCaseById, getDocumentsByCase, listFailures, recordFailure } from '@pje/core'
 import { HttpClient } from '../src/http/client.ts'
 import { deepCase, deepRange, sanitizeFilename, documentPdfKeyFor } from '../src/crawl/deep.ts'
 import type { BinaryDocumentRef } from '../src/pje/detail.ts'
@@ -179,6 +179,37 @@ describe('deepCase', () => {
     const outcome = await deepCase({ client, db, blobs }, { kind: 'number', number: REAL_NUMBER })
     expect(outcome).toMatchObject({ kind: 'done', idProcessoTrf: 1, number: REAL_NUMBER })
     expect(getCaseById(db, 1)!.ca).toBe(VALID_CA)
+  })
+
+  it('resolves a previously recorded case-level failure once the case later succeeds', async () => {
+    recordFailure(db, 'deep_case', REAL_NUMBER, 'fetch failed')
+    const client = fakePortal({
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => ({ body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }),
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnly }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'number', number: REAL_NUMBER })
+    expect(outcome.kind).toBe('done')
+    expect(listFailures(db, { unresolvedOnly: true })).toHaveLength(0)
+  })
+
+  it('resolves a previously recorded document failure once that document later succeeds', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+    })
+    recordFailure(db, 'document', '12102009', 'transient HTTP 404')
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnly }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    expect(listFailures(db, { unresolvedOnly: true })).toHaveLength(0)
   })
 
   it('records a case-level failure without throwing when the summary PDF is absent', async () => {

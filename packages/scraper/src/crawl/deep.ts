@@ -246,6 +246,10 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
       try {
         await downloadOneDocument(deps, idProcessoTrf, record.number, docRef)
         stored++
+        // This document may have failed on an earlier run; it just
+        // succeeded, so any such record is no longer accurate (mirrors
+        // `resolveFailure(db, 'summary_pdf', ...)` above).
+        resolveFailure(db, 'document', String(docRef.id))
         opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'stored' })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
@@ -254,6 +258,13 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
         opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'failed' })
       }
     }
+
+    // The case itself may have failed on an earlier run — recorded under
+    // `targetRef` if that failure happened before the id was even resolved,
+    // or under the id otherwise (see the catch block below). Clear both:
+    // whichever key an old failure used, this run's success makes it stale.
+    resolveFailure(db, 'deep_case', targetRef)
+    resolveFailure(db, 'deep_case', String(idProcessoTrf))
 
     return { kind: 'done', idProcessoTrf, number: record.number, documentsStored: stored, documentsSkipped: skipped, documentsFailed: failed }
   } catch (err) {
