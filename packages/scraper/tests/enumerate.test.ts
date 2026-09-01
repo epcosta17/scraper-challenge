@@ -46,7 +46,7 @@ describe('crawl', () => {
     const client = fakeServer(new Set([1, 2]))
     const summary = await crawl({ client, db, blobs }, { fromId: 1, toId: 1, concurrency: 1 })
     expect(summary.stored).toBe(1)
-    expect(getMaxCaseId(db)).toBeGreaterThan(0)
+    expect(getMaxCaseId(db)).toBe(1)
   })
 
   it('records misses as probes, not failures', async () => {
@@ -83,7 +83,8 @@ describe('crawl', () => {
     await crawl({ client, db, blobs }, { fromId: 1, toId: 1, concurrency: 1 })
     const before = getMaxCaseId(db)
     const summary = await crawl({ client, db, blobs }, { stopAfterMisses: 2, concurrency: 1 })
-    expect(summary.lastId).toBeGreaterThan(before)
+    expect(before).toBe(1)
+    expect(summary.lastId).toBe(3)
   })
 
   it('reports progress for every id examined', async () => {
@@ -94,5 +95,35 @@ describe('crawl', () => {
       onProgress: (p) => seen.push(p.outcome),
     })
     expect(seen).toEqual(['stored', 'absent'])
+  })
+
+  it('keeps the consecutive-miss streak faithful to id order, not completion order, under concurrency', async () => {
+    // Only id 2 is a hit; ids 1, 3, 4, 5 are misses. The hit does real work
+    // the miss path doesn't (PDF parse + an async blob write), so it
+    // reliably resolves LAST among these five even though it was dispatched
+    // second — completion order is 1, 3, 4, 5, 2, not id order.
+    //
+    // A streak counter that updates at *completion* time would see misses
+    // 1, 3, 4 land back-to-back (the hit hasn't reset it yet) and stop
+    // after id 4 — one id early, never even requesting id 5. The true
+    // id-order streak — broken by the hit at 2 — is only 3, 4, 5, so the
+    // crawl must stop after id 5, with the hit still counted.
+    //
+    // `limit: 5` is a test-only safety net, not part of what's under test:
+    // the id-ordered frontier can't tell the streak is broken until id 2
+    // resolves, so — as documented on `crawl`'s `outcomes`/`frontier` — it
+    // will keep dispatching ids past 5 for as long as id 2 is outstanding.
+    // That's bounded by nothing but id 2's latency, so without a cap this
+    // test would be at the mercy of how fast this machine's disk is.
+    const client = fakeServer(new Set([2]))
+    const seen: string[] = []
+    const summary = await crawl({ client, db, blobs }, {
+      fromId: 1, concurrency: 2, stopAfterMisses: 3, limit: 5,
+      onProgress: (p) => seen.push(`${p.id}:${p.outcome}`),
+    })
+    // Confirms the scenario actually exercises out-of-order completion —
+    // id 2's outcome is reported after id 3's, not before.
+    expect(seen.indexOf('2:stored')).toBeGreaterThan(seen.indexOf('3:absent'))
+    expect(summary).toEqual({ stored: 1, absent: 4, failed: 0, lastId: 5 })
   })
 })

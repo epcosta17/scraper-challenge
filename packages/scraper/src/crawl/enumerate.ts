@@ -78,6 +78,21 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
   // genuine one. A frontier walks ids in order and only folds an outcome
   // into `consecutiveMisses` once every id up to it is known, so the count
   // is exactly what it would be for a single-threaded crawl.
+  //
+  // This makes the stop boundary soft under concurrency, with no bound
+  // tied to `concurrency`: a worker is never blocked on the frontier
+  // catching up — as soon as its own request resolves it dispatches the
+  // next id, however long a lower, still-in-flight id is taking. If that
+  // straggler is deep in 429 backoff (or just a slow response), every other
+  // worker keeps consuming new ids the entire time, so the overshoot scales
+  // with the straggler's latency, not with worker count — every one of
+  // those extra ids is still recorded correctly once the frontier catches
+  // up, but each is a wasted request against a rate-limited portal. Not
+  // hypothetical: an all-synchronous miss path racing a single slow hit can
+  // starve the miss counter for as long as that one hit is outstanding (see
+  // the concurrency test below). Throttling dispatch on the frontier would
+  // fix this, but adds coordination complexity for a cost that's small when
+  // request durations are similar, which is the common case; not done here.
   const outcomes = new Map<number, CrawlProgress['outcome']>()
   let frontier = start
   let consecutiveMisses = 0
