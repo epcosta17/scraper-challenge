@@ -159,13 +159,16 @@ const MOVEMENT_TIMESTAMP_RE = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/g
  * NOT from the case detail HTML page, even though that page also renders a
  * "Movimentações do Processo" table.
  *
- * Found live: that HTML table is capped by the portal with no pagination
- * control at all (case 0800245-51.2020.4.05.8002 showed 15 rows of a
- * stated 39 — see `pje/detail.ts`'s `parseMovementsTotal`). The PDF, by
- * contrast, prints the log in full across as many report pages as it takes,
- * with no cap observed. Do not "fix" this back to reading the richer-
- * looking HTML table without re-verifying that live case first — doing so
- * would silently drop most of a long case's history.
+ * Found live: that HTML table renders only its first page — case
+ * 0800245-51.2020.4.05.8002 shows 15 rows of a stated 39. It can be paged
+ * (via a `rich:inputNumberSlider`; see `pje/detail.ts`'s
+ * `parseMovementsTotal` for the mechanism), but the PDF prints the whole
+ * log in one shot, costs no extra request since every case downloads it
+ * regardless, and so makes the log available from `crawl` across the entire
+ * corpus. Paging the HTML would cost extra POSTs per case and work only in
+ * `deep`. Do not "fix" this back to the richer-looking HTML table: reading
+ * only its first page silently drops most of a long case's history, and
+ * paging it properly trades corpus-wide coverage for extra requests.
  *
  * Every entry in the reconstructed text is a bare
  * `<timestamp> <description>` pair with no other delimiter between them

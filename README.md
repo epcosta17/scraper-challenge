@@ -331,10 +331,12 @@ stored watermark.
     Populated by **both** `crawl` and `daily`, not only `deep` — the log is
     parsed from the case's summary PDF, which every case already downloads,
     at no extra request. This is deliberately **not** the detail page's own
-    "Movimentações do Processo" table: that table is capped by the portal
-    with no pagination control at all (found live, case
-    0800245-51.2020.4.05.8002: 15 rows shown of a stated 39), while the
-    summary PDF prints the log in full. `deep`, which fetches both sources,
+    "Movimentações do Processo" table, which renders only its first page
+    (found live, case 0800245-51.2020.4.05.8002: 15 rows of a stated 39).
+    That table *can* be paged — its control is a RichFaces number slider in
+    a form of its own — but doing so costs extra requests per case and works
+    only in `deep`, the one command that loads the detail page, whereas the
+    summary PDF carries the whole log in one shot for every case. `deep`, which fetches both sources,
     cross-checks the PDF's count against the detail page's stated total and
     records a `movements`-kind `failures` row if they ever disagree — the
     signal that this assumption has broken for some case. Re-running a case

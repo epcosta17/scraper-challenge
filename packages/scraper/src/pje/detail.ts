@@ -363,14 +363,29 @@ export function parseParties(html: string): { parties: PartyInput[]; ativoTotal:
  * own `...processoEventoPanel` or a per-cell form whose id merely contains
  * that substring) — never the rows themselves.
  *
- * Found live (case 0800245-51.2020.4.05.8002): this table is capped by the
- * portal with **no pagination control at all** — no Datascroller, nothing —
- * unlike Polo Ativo/Passivo, which at least offer one. It showed 15 rows
- * against a stated 39. The rows therefore come from the case's summary PDF
- * instead, which prints the log in full (see `pdf/parse.ts`'s
- * `parseMovements`); this total exists purely so `crawl/deep.ts` can
- * cross-check the PDF's own count against it and notice, loudly, the day
- * that "the PDF is complete" assumption stops holding for some case.
+ * Found live (case 0800245-51.2020.4.05.8002): this table renders only its
+ * first page — 15 rows against a stated 39. It CAN be paged, but not by a
+ * Datascroller like Polo Ativo/Passivo use. Its control is a RichFaces
+ * `rich:inputNumberSlider` in a `<form>` of its own, placed right after the
+ * "N resultados encontrados" span. That form's inline script declares
+ * everything needed to drive it:
+ *
+ *     new Richfaces.Slider("<sliderId>", {'minValue':'1','maxValue':'3', ...})
+ *
+ * `maxValue` is the page count, and the slider's id doubles as the name of
+ * the page parameter. Recorded here because it took real digging to find
+ * and it is the mechanism anyone paging these tables will need.
+ *
+ * We take the rows from the case's summary PDF anyway (see `pdf/parse.ts`'s
+ * `parseMovements`) — not because the HTML is unreachable, but because the
+ * PDF carries the whole log in one shot, at no extra request since every
+ * case downloads it regardless, and therefore works in `crawl` across the
+ * entire corpus. Paging the HTML would cost extra POSTs per case and only
+ * ever work in `deep`, the sole command that loads this page.
+ *
+ * This total exists purely so `crawl/deep.ts` can cross-check the PDF's own
+ * count against it and notice, loudly, the day that "the PDF is complete"
+ * assumption stops holding for some case.
  */
 export function parseMovementsTotal(html: string): number | null {
   const $ = cheerio.load(html)
