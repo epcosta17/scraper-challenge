@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { main } from '../src/cli.ts'
+import { main } from '../src/cli/run.ts'
 
 // `main` accepts `fetchImpl` purely as a test seam: production always goes
 // through the real `fetch`, but a test needs a way to prove a code path
