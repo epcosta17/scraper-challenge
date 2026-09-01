@@ -70,6 +70,15 @@ WARNING: 30 results — the server cap was reached, so there are more.
          in this phase; use `crawl` for complete coverage.
 ```
 
+While it works, `search` names the filters it is submitting and the two
+steps it takes, on stderr (`--quiet` silences that; see *Progress output*):
+
+```
+Searching the portal: number=0013201-41.2025.4.05.8202
+starting a session
+submitting the search form
+```
+
 `--dry-run` works here too: it prints the filters `search` would submit and
 makes no request at all — as a sentence by default, as a JSON plan under
 `--json` (see *Machine-readable output*).
@@ -93,19 +102,30 @@ Last id: 130102
 ```
 
 While it runs, `crawl`/`daily` print a periodic progress line to **stderr**
-(never stdout — see *Progress output* below) roughly every 2 seconds of
-wall-clock time, showing how many ids have been checked, the id currently in
-flight, and the running counts:
+(never stdout — see *Progress output* below): a header saying what the run
+is about to do, then roughly every 2 seconds of wall-clock time a line
+naming the id currently in flight, the case it turned out to be, and the
+running counts:
 
 ```
-… 40 ids checked (at id 130139)  stored=39 absent=0 failed=1
+Crawling 31 ids (130100-130130), 4 at a time at 2 req/s -> db /tmp/i3.db, files /tmp/i3
+… 8 ids checked (at id 130107, 0010020-83.2026.4.05.8400)  stored=8 absent=0 failed=0
+… 17 ids checked (at id 130116)  stored=17 absent=0 failed=0
 ```
 
 A fixed time interval, not a fixed number of ids, is what bounds the silence:
 throughput swings a lot with `--concurrency` and how often the portal 429s, so
 counting ids can't guarantee the terminal stays quiet for only a bounded
-stretch the way a wall-clock interval does. `--verbose` trades that periodic
-line for the existing one-line-per-id log instead (see *Progress output*).
+stretch the way a wall-clock interval does. A **failed id is not left to that
+interval** — it is reported the moment it fails, with its reason, rather than
+only surfacing as a number in the final `Failed:` count:
+
+```
+! id 130118 failed: Transient HTTP 404 from https://pjett.trf5.jus.br/…/reportPDF.seam?idProcessoTrf=130118
+```
+
+`--verbose` trades the periodic line for one line per id (see *Progress
+output*).
 
 Omit `--from-id` to resume automatically from the highest id already stored in
 the database (`MAX(id_processo_trf)` — see *How resuming works* below). Omit
@@ -183,20 +203,44 @@ the run continues. `--dry-run` prints the plan without touching the network,
 the database, or disk, exactly like `crawl` — and, under `--json`, prints it
 as JSON rather than prose.
 
-For a `--from-id`/`--to-id` range, `deep` prints one line to **stderr** as
-each case *finishes* — a case's own chain (summary PDF, search bridge, detail
-page, then every document) is otherwise silent for several seconds, and a
-large range would otherwise go quiet for hours:
+While it runs, `deep` narrates the chain on **stderr**, naming each step as
+it *starts* — every one of them takes seconds, and a case that only spoke
+when it finished was several seconds of silence at a time. Each line is
+tagged with the case it belongs to, so `--concurrency` above 1 (the default
+is 4) stays attributable; the lines below are one real run, interleaved
+exactly as the four cases produced them:
 
 ```
-[1/3] 0800120-05.2024.4.05.8306  9 documents (9 new)
-[2/3] 0013478-88.2026.4.05.0000  3 documents (3 new)
-[3/3] 0005425-26.2026.4.05.8308  2 documents (2 new)
+Scraping 4 cases (ids 130107-130110), 4 at a time -> db /tmp/i1.db, files /tmp/i1
+[1/4 id 130107] fetching the summary PDF
+[2/4 id 130108] fetching the summary PDF
+[3/4 id 130109] fetching the summary PDF
+[4/4 id 130110] fetching the summary PDF
+[4/4 id 130110] ! summary PDF came back HTTP 404 - retry 1 of 4
+[1/4 id 130107] ! summary PDF came back HTTP 404 - retry 1 of 4
+[2/4 id 130108] got 0017596-39.2026.4.05.8300 (REMESSA NECESSÁRIA CÍVEL)
+[2/4 id 130108] resolving the detail key: searching by case number
+[2/4 id 130108] reading the case file
+[2/4 id 130108] the case file lists 4 documents
+[2/4 id 130108] downloading documents: 4 of 4
+[2/4 id 130108] done: 0017596-39.2026.4.05.8300 - 4 documents (4 new)
 ```
 
-A failed case is reported here too, at its own position, not only in the
-final summary. See *Progress output* below for `--verbose` and the
-stdout/stderr split.
+The retries in there are the point, not noise: the summary PDF endpoint 404s
+intermittently and retries up to three more times, and the search bridge
+fails on roughly one run in four and re-runs with a fresh session (see
+*Findings*). Both used to be pure silence in the middle of a step that
+claimed to be doing something else. A failed case is likewise reported at
+its own position, with its reason, not only in the final summary:
+
+```
+[3/4 id 130109] FAILED: No summary PDF for id 130109 (unassigned or sealed).
+```
+
+A case whose documents are already downloaded says so up front
+(`downloading documents: 4 already on disk, nothing to fetch`) rather than
+after the fact. See *Progress output* below for `--verbose`, `--quiet` and
+the stdout/stderr split.
 
 **Documents come in two shapes.** Binary documents (PDFs) are plain download
 links and work cold, with no session required; each is written to
@@ -292,42 +336,94 @@ permanently settled would mean never noticing either transition.
 
 ### Progress output
 
-Every command that touches the network prints progress to **stderr** and
-its actual result to **stdout** — so `--json` (and any other piping of the
-final output) always stays clean, no matter how much progress a run prints
-alongside it. By default, without `--verbose`, each command stays *alive but
-quiet*: `deep` prints one line per case as it finishes (see above), and
-`crawl`/`daily` print a periodic line every ~2 seconds (see above) — enough
-to tell the run apart from a hung one, without a line per id.
+Every command that touches the network prints progress to **stderr** and its
+actual result to **stdout** — so `--json` (and any other piping of the final
+output) always stays clean, no matter how much progress a run prints
+alongside it. How much progress there is, is one of three levels:
 
-`--verbose` adds the detail that's otherwise missing while a `deep` case is
-still in progress — the chain (summary PDF, search bridge if the cached `ca`
-needs refreshing, detail page, then every document) can otherwise sit silent
-for several seconds before anything is reported at all. Each step is named
-as it starts, followed by one line per document as it's stored, skipped, or
-fails:
+| Level | Flag | What lands on stderr |
+|---|---|---|
+| Quiet | `--quiet` | Nothing. The result still goes to stdout, as always. |
+| Default | *(none)* | A header saying what the run is about to do, then every step of the work **as it starts**, plus every failure and every retry **as it happens**. |
+| Verbose | `--verbose` | All of the above, plus each individual document and the HTTP requests, responses and retries underneath the narration. |
+
+`--quiet` and `--verbose` are opposites, so passing both is rejected (exit
+code 2) rather than letting one silently win.
+
+**Steps are announced when they start, not when they finish.** Fetching a
+summary PDF, resolving a detail key through the search bridge, reading a
+case file and downloading its documents each take seconds; a line printed
+only on completion means the terminal is silent for exactly as long as the
+thing you would want to know about is happening. The same rule is what puts
+retries on screen: both retrying paths in this scraper (the summary PDF's
+intermittent 404s and the search bridge's `ActionNotExecutedError`, see
+*Findings*) used to be silence in the middle of a step that had already
+claimed to be doing something else.
+
+**`--verbose`** adds the requests. A single case, start to finish, on a run
+where the summary PDF needed one retry:
 
 ```
-130105
-  → summary PDF
-  → resolving ca (search bridge)
-  → detail page: 9 documents
-  + document id=12102067 (binary) stored
-  + document id=12102059 (binary) stored
-  ...
-Case 0800120-05.2024.4.05.8306 (id 130105):
-  Documents stored:  9
-  Documents skipped: 0   (already downloaded)
-  Documents failed:  0   (recorded in the failures table for retry)
+Scraping 1 case (id 130109) -> db /tmp/i2.db, files /tmp/i2
+[1/1 id 130109] fetching the summary PDF
+  → GET https://pjett.trf5.jus.br/pjeconsulta/…/reportPDF.seam?idProcessoTrf=130109
+  ← 404  16.8 kB in 2472 ms
+[1/1 id 130109] ! summary PDF came back HTTP 404 - retry 1 of 4
+  → GET https://pjett.trf5.jus.br/pjeconsulta/…/reportPDF.seam?idProcessoTrf=130109
+  ← 200  19.6 kB in 788 ms
+[1/1 id 130109] got 0019122-32.2026.4.05.8400 (REMESSA NECESSÁRIA CÍVEL)
+[1/1 id 130109] resolving the detail key: searching by case number
+  → GET https://pjett.trf5.jus.br/pjeconsulta/ConsultaPublica/listView.seam
+  ← 200  47.0 kB in 583 ms
+  → POST https://pjett.trf5.jus.br/pjeconsulta/ConsultaPublica/listView.seam;jsessionid=…
+  ← 200  5.8 kB in 559 ms
+[1/1 id 130109] reading the case file
+  → GET https://pjett.trf5.jus.br/pjeconsulta/…/listView.seam?ca=44792153139a99aa…
+  ← 200  90.7 kB in 1503 ms
+[1/1 id 130109] the case file lists 4 documents
+[1/1 id 130109] downloading documents: 4 of 4
+  → GET https://pjett.trf5.jus.br/pjeconsulta/…/documentoSemLoginHTML.seam?ca=9d14ecaf…&idProcessoDoc=12425121
+  ← 200  54.6 kB in 751 ms
+[1/1 id 130109]   + document id=12425121 (html) stored
+…
+[1/1 id 130109] done: 0019122-32.2026.4.05.8400 - 4 documents (4 new)
 ```
 
-(The header line is whatever target `deep` started from — an internal id for
-a `--from-id`/`--to-id` range, since the case number itself isn't known
-until the summary PDF has been parsed.) `--concurrency` above 1 interleaves
-these lines across cases running at once, same as it always has for
-per-document lines — lower `--concurrency` to `1` for a strictly sequential
-trace. For `crawl`/`daily`, `--verbose` keeps the existing one line per id
-instead of the periodic line.
+A 429 or a 5xx appears here too, before the wait rather than after it, so a
+run that is about to go quiet for a minute has already said why:
+
+```
+  ↻ rate limited (HTTP 429) - waiting 2.0s before attempt 2 of 5
+```
+
+For `crawl`/`daily`, `--verbose` replaces the periodic heartbeat with one
+line per id, which names the case a stored id turned out to be and the
+reason a failed one failed:
+
+```
++ id=130100  stored 0013475-36.2026.4.05.0000  (stored=1 absent=0 failed=0)
+. id=130101  absent  (stored=1 absent=1 failed=0)
+! id=130102  failed: Transient HTTP 404 from https://pjett.trf5.jus.br/…  (stored=1 absent=1 failed=1)
+```
+
+**`--quiet`** prints nothing at all to stderr — the case for it is a
+scheduled run whose stderr nobody reads until the exit code says to:
+
+```bash
+npm run scraper -- deep --from-id 130107 --to-id 130108 --quiet --db /tmp/i5.db --out /tmp/i5
+```
+
+```
+Cases done:        2
+Cases failed:       0   (recorded in the failures table for retry)
+Documents stored:   8
+Documents skipped:  0   (already downloaded)
+Documents failed:   0   (recorded in the failures table for retry)
+```
+
+(Node's own `ExperimentalWarning` about type stripping still appears on
+stderr under `--quiet`: that comes from the runtime, not from this scraper.
+`node --disable-warning=ExperimentalWarning` silences it.)
 
 ### Machine-readable output (`--json`)
 
@@ -450,7 +546,8 @@ stored watermark.
 | `--db <path>` | SQLite file (default: `data/pje.db`) |
 | `--out <path>` | PDF directory (default: `data/pdfs`) |
 | `--json` | Machine-readable output on stdout — including a `--dry-run` plan (progress, if any, stays on stderr — see *Machine-readable output*) |
-| `--verbose` | Fuller progress: per-step/per-document detail for `deep`, per-id lines for `crawl`/`daily` — no effect on `search` (see *Progress output*) |
+| `--verbose` | Add the requests under the narration: URLs, status codes, retries, 429 backoff, plus a line per document and per crawled id (see *Progress output*) |
+| `--quiet` | Print only the final result — nothing on stderr at all (see *Progress output*) |
 | `--dry-run` | Plan the work without touching the network, the database, or disk (prints the plan as JSON under `--json`) |
 
 **Top-level** (stand alone, in place of a command):
@@ -730,7 +827,10 @@ Two workspace packages, dependencies pointing one way (`scraper` depends on
   building, response parsing, case detail parsing, document download
   (`src/pje/`) — the PDF parser (`src/pdf/`), the id-enumeration crawl engine
   and the deep (case-to-documents) engine (`src/crawl/`), and the CLI itself
-  (`src/cli/`).
+  (`src/cli/`: argument parsing, pure formatters that turn a progress event
+  into a line, and `reporter.ts`, which decides which of those lines the
+  chosen `--quiet`/default/`--verbose` level actually prints — one place
+  rather than a per-level branch at every call site).
 
 ## Scope
 
