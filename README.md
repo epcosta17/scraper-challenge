@@ -71,7 +71,8 @@ WARNING: 30 results — the server cap was reached, so there are more.
 ```
 
 `--dry-run` works here too: it prints the filters `search` would submit and
-makes no request at all.
+makes no request at all — as a sentence by default, as a JSON plan under
+`--json` (see *Machine-readable output*).
 
 ### `crawl` — enumerate every case by internal id
 
@@ -179,7 +180,8 @@ whenever a still-valid `ca` is already on file, see below) + 1 detail page +
 document does not abort the case, and a single failed case does not abort a
 range — both are recorded in `failures` (kind `deep_case` or `document`) and
 the run continues. `--dry-run` prints the plan without touching the network,
-the database, or disk, exactly like `crawl`.
+the database, or disk, exactly like `crawl` — and, under `--json`, prints it
+as JSON rather than prose.
 
 For a `--from-id`/`--to-id` range, `deep` prints one line to **stderr** as
 each case *finishes* — a case's own chain (summary PDF, search bridge, detail
@@ -327,6 +329,84 @@ per-document lines — lower `--concurrency` to `1` for a strictly sequential
 trace. For `crawl`/`daily`, `--verbose` keeps the existing one line per id
 instead of the periodic line.
 
+### Machine-readable output (`--json`)
+
+`--json` swaps the human-readable result on stdout for a single JSON
+document, and stdout carries nothing else: progress lines are on stderr
+either way (see above), and the "re-run to retry" hint is suppressed
+outright. Piping that output needs no further flag to stay parseable, with
+one caveat that belongs to npm rather than to the scraper: `npm run` prints
+its own two-line banner to stdout, so pipe from `npm run --silent scraper
+-- ...`, or from `node --experimental-strip-types
+packages/scraper/src/cli.ts ...` — which is exactly what the npm script
+runs. The shape follows the command:
+
+`search` — the rows the portal returned, and whether its 30-row cap was hit:
+
+```json
+{
+  "rows": [
+    {
+      "idProcessoTrf": 129921,
+      "number": "0013201-41.2025.4.05.8202",
+      "ca": "76b81711e2c69f608d188fb631214485f3d19a12e7c30f6e"
+    }
+  ],
+  "capped": false
+}
+```
+
+`crawl` / `daily` — the same counters the summary prints, plus the last id
+examined (the new watermark):
+
+```json
+{ "stored": 3, "absent": 0, "failed": 0, "lastId": 130105 }
+```
+
+`deep <number|id>` — one case's outcome. A case that failed is reported as
+data too, not as an empty document: `{ "kind": "failed", "ref": "130101",
+"error": "..." }`, where `ref` is the target as it was given.
+
+```json
+{
+  "kind": "done",
+  "idProcessoTrf": 130101,
+  "number": "0000786-77.2026.4.05.8400",
+  "documentsStored": 0,
+  "documentsSkipped": 4,
+  "documentsFailed": 0
+}
+```
+
+`deep --from-id/--to-id` — the same counts aggregated over the whole range:
+
+```json
+{
+  "casesDone": 3,
+  "casesFailed": 0,
+  "documentsStored": 9,
+  "documentsSkipped": 0,
+  "documentsFailed": 0
+}
+```
+
+`--dry-run` — the plan, as data rather than as the sentence the default mode
+prints. `dryRun` and `command` identify it; a bound the command would have
+defaulted is `null` rather than a missing key, so "resume from the
+watermark" is distinguishable from "start at id 1" without probing for
+absence:
+
+```bash
+npm run scraper -- daily --dry-run --json
+```
+
+```json
+{ "dryRun": true, "command": "daily", "fromId": null, "toId": null }
+```
+
+`search`'s plan carries `filters` instead, and `deep`'s carries `target`
+(the single target, or `null` for a range) alongside `fromId`/`toId`.
+
 ## Flags
 
 **Search filters** (mirror the website's form; used by `search`):
@@ -369,9 +449,9 @@ stored watermark.
 | `--rate <n>` | Requests per second (default: 2) |
 | `--db <path>` | SQLite file (default: `data/pje.db`) |
 | `--out <path>` | PDF directory (default: `data/pdfs`) |
-| `--json` | Machine-readable output on stdout (progress, if any, stays on stderr — see *Progress output*) |
+| `--json` | Machine-readable output on stdout — including a `--dry-run` plan (progress, if any, stays on stderr — see *Machine-readable output*) |
 | `--verbose` | Fuller progress: per-step/per-document detail for `deep`, per-id lines for `crawl`/`daily` — no effect on `search` (see *Progress output*) |
-| `--dry-run` | Plan the work without touching the network, the database, or disk |
+| `--dry-run` | Plan the work without touching the network, the database, or disk (prints the plan as JSON under `--json`) |
 
 **Top-level** (stand alone, in place of a command):
 
