@@ -131,8 +131,10 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
         // Not a genuine miss: the id survived every retry inside
         // `fetchReportPdf` but still never came back as either a PDF or a
         // stable 200+HTML absence. Record it as a *failure*, not a probe —
-        // a probe is never revisited, and this id is expected to succeed
-        // on a later run once the flaky backend node recovers.
+        // failures are tracked for retry and resolution, while a probe is
+        // recorded purely for visibility and is not consulted by `crawl` to
+        // skip anything — and this id is expected to succeed on a later run
+        // once the flaky backend node recovers.
         recordFailure(db, 'summary_pdf', String(id), `Transient HTTP ${result.status} from ${result.finalUrl}`)
         failed++
         outcome = 'failed'

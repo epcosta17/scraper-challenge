@@ -326,23 +326,28 @@ self-contained, which is what makes `crawl` trivially resumable (no session
 to re-establish after a restart) and safely parallelizable (no shared session
 state for concurrent workers to race on).
 
-**Success is decided by the response body, never the status code.** Both an
-absent id (unassigned or out of range) and a sealed case ("segredo de
-justiça") return **HTTP 200** with an HTML error page — never a 404. The only
-reliable discriminator is the first five bytes of the body: `%PDF-` means
-success, anything else means it wasn't a PDF. Separately, and this is the
-correction that matters most for correctness: a *transient* server failure
-(observed live as an intermittent HTTP 404 from one unhealthy backend node
-behind the load balancer) returns a **non-200** status with an HTML body that
-looks superficially like the absent case. The two must never be conflated.
-`fetchReportPdf` retries a bounded number of times before giving up on a
-non-200 response, and the two outcomes are recorded differently: an absent id
-is an expected, permanent miss recorded in `probes` and never retried again;
-a transient failure is recorded in `failures` and is retried on a later
-`crawl` run. Treating a transient failure as an absent case would silently
-and permanently lose a case that actually exists; treating an absent case as
-transient would mean retrying roughly 15% of the entire crawl forever, for no
-gain.
+**Success is decided by the response body, never the status code alone.**
+Both an absent id (unassigned or out of range) and a sealed case ("segredo
+de justiça") return **HTTP 200** with a specific, recognised HTML error page
+(matched by its redirect URL or a diagnostic marker in the body — see
+`looksLikeErrorSeam`), never a 404. Classification checks the body in order:
+`%PDF-` as the first five bytes means success; failing that, an HTTP 200
+response that actually looks like the known error page means absent;
+anything else — an intermittent non-200 status (observed live as an
+intermittent HTTP 404 from one unhealthy backend node behind the load
+balancer), or an HTTP 200 with an *unrecognised* body (a maintenance page, a
+bot-manager interstitial, a login redirect, or any other portal-wide shape
+change) — is *transient*. The three must never be conflated.
+`fetchReportPdf` retries a bounded number of times before giving up as
+transient, and the two failure outcomes are recorded differently: an absent
+id is recorded in `probes`, and a transient failure is recorded in
+`failures` and is retried on a later `crawl` run. Absence is not treated as
+permanent — see *How resuming works* above: `crawl` re-probes a
+previously-absent id on every re-run instead of skipping it, since a case
+under seal can later become public. Treating a transient failure as an
+absent case would silently and permanently lose a case that actually
+exists; treating an absent case as transient would mean retrying roughly
+15% of the entire crawl forever, for no gain.
 
 **The search form fails silently in six separate ways, and the client
 defeats every one of them.** First, the "Pesquisar" button's own `onclick`

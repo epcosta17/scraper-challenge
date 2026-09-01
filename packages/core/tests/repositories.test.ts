@@ -125,7 +125,7 @@ describe('probes repository', () => {
     expect(row!.attempts).toBe(2)
   })
 
-  it('returns probed ids as a set for crawl skipping', () => {
+  it('returns probed ids as a set', () => {
     recordProbe(db, 1, 'not_found')
     recordProbe(db, 2, 'not_found')
     expect(getProbedIds(db)).toEqual(new Set([1, 2]))

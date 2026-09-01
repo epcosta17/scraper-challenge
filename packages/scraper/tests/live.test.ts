@@ -43,19 +43,20 @@ live('live portal', () => {
   it('classifies an out-of-range id as absent, not transient', async () => {
     // `ReportResult` has three variants. 999999999 is far past the observed
     // upper bound of the idProcessoTrf counter, so the portal returns HTTP
-    // 200 with an HTML error page — a stable, permanent miss, which
-    // `fetchReportPdf` classifies as 'absent'. That is a different thing
-    // from 'transient' (a non-200 response that survived every retry): an
-    // absent id is an expected miss recorded in `probes` and never retried,
-    // while a transient result is a retryable server failure recorded in
-    // `failures`. Asserting `res.kind === 'absent'` alone would let a
-    // regression that turns this into 'transient' pass silently (both are
-    // "not pdf"), so spell out why that distinction matters when it fails.
+    // 200 with the recognised error page, which `fetchReportPdf` classifies
+    // as 'absent'. That is a different thing from 'transient' (anything
+    // else that survived every retry — a non-200 response, or an HTTP 200
+    // with an unrecognised body): an absent id is an expected miss recorded
+    // in `probes`, while a transient result is a retryable server failure
+    // recorded in `failures`. Asserting `res.kind === 'absent'` alone would
+    // let a regression that turns this into 'transient' pass silently (both
+    // are "not pdf"), so spell out why that distinction matters when it
+    // fails.
     const res = await fetchReportPdf(client(), 999999999)
     expect(
       res.kind,
       res.kind === 'transient'
-        ? `expected 'absent' (a permanent, expected miss) but got 'transient' ` +
+        ? `expected 'absent' (an expected miss) but got 'transient' ` +
           `(HTTP ${res.status} from ${res.finalUrl}) — a retryable server failure, ` +
           `which is a different outcome and must not be conflated with an absent case`
         : `expected 'absent', got '${res.kind}'`,
