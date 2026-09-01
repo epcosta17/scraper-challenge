@@ -107,13 +107,35 @@ function caseUpsertFromRecord(idProcessoTrf: number, record: CaseRecord, ca: str
   }
 }
 
+/**
+ * Serializes the search bridge per `HttpClient`. Found live under
+ * `deepRange`'s worker pool: `startSession` + `search` share one cookie jar
+ * across every worker (the same jar the whole run's requests share), and two
+ * of them bootstrapping a session at once can interleave — one worker's
+ * session cookie lands in the jar just as another's POST goes out bound to
+ * the OTHER worker's now-stale `actionUrl`/`submitParam`, and the server
+ * reports the AJAX action never ran. The bridge itself is only hit for ids
+ * without an already-valid cached `ca`, so serializing just this part costs
+ * little against the throughput a whole run needs.
+ */
+const searchBridgeQueue = new WeakMap<HttpClient, Promise<unknown>>()
+
+async function runExclusive<T>(client: HttpClient, fn: () => Promise<T>): Promise<T> {
+  const prior = searchBridgeQueue.get(client) ?? Promise.resolve()
+  const result = prior.then(fn, fn)
+  searchBridgeQueue.set(client, result.then(() => undefined, () => undefined))
+  return result
+}
+
 /** Runs the search bridge for one case number, returning its id and a fresh `ca`. */
 async function searchForCa(client: HttpClient, number: string): Promise<{ idProcessoTrf: number; ca: string }> {
-  const session = await startSession(client)
-  const outcome = await search(client, session, { number })
-  const row = outcome.rows.find((r) => r.number === number)
-  if (!row) throw new CaseNotFoundError(number)
-  return { idProcessoTrf: row.idProcessoTrf, ca: row.ca }
+  return runExclusive(client, async () => {
+    const session = await startSession(client)
+    const outcome = await search(client, session, { number })
+    const row = outcome.rows.find((r) => r.number === number)
+    if (!row) throw new CaseNotFoundError(number)
+    return { idProcessoTrf: row.idProcessoTrf, ca: row.ca }
+  })
 }
 
 /** Resolves a target to an id and whatever `ca` is already on file for it (a cache, not a fact — see `fetchDetail`). */

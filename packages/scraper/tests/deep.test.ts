@@ -33,13 +33,14 @@ function searchXmlFor(idProcessoTrf: number, number: string, ca: string): Buffer
 }
 
 interface Spec { body: Buffer; status?: number; url?: string }
+type MaybePromise<T> = T | Promise<T>
 interface PortalScript {
-  summaryPdf?: (id: number) => Spec
-  detail?: (ca: string) => Spec
-  searchSession?: () => Spec
-  searchAction?: () => Spec
-  binaryDoc?: (idBin: number) => Spec
-  htmlDoc?: (ca: string, idProcessoDoc: number) => Spec
+  summaryPdf?: (id: number) => MaybePromise<Spec>
+  detail?: (ca: string) => MaybePromise<Spec>
+  searchSession?: () => MaybePromise<Spec>
+  searchAction?: (body: string) => MaybePromise<Spec>
+  binaryDoc?: (idBin: number) => MaybePromise<Spec>
+  htmlDoc?: (ca: string, idProcessoDoc: number) => MaybePromise<Spec>
 }
 
 function fakePortal(script: PortalScript, requestLog: string[] = []): HttpClient {
@@ -49,15 +50,17 @@ function fakePortal(script: PortalScript, requestLog: string[] = []): HttpClient
 
     let spec: Spec
     if (u.pathname.endsWith('/reportPDF.seam')) {
-      spec = script.summaryPdf!(Number(u.searchParams.get('idProcessoTrf')))
+      spec = await script.summaryPdf!(Number(u.searchParams.get('idProcessoTrf')))
     } else if (u.pathname.endsWith('/documentoSemLoginHTML.seam')) {
-      spec = script.htmlDoc!(u.searchParams.get('ca')!, Number(u.searchParams.get('idProcessoDoc')))
+      spec = await script.htmlDoc!(u.searchParams.get('ca')!, Number(u.searchParams.get('idProcessoDoc')))
     } else if (u.pathname.endsWith('/DetalheProcessoConsultaPublica/listView.seam')) {
       spec = u.searchParams.has('idBin')
-        ? script.binaryDoc!(Number(u.searchParams.get('idBin')))
-        : script.detail!(u.searchParams.get('ca')!)
+        ? await script.binaryDoc!(Number(u.searchParams.get('idBin')))
+        : await script.detail!(u.searchParams.get('ca')!)
     } else if (u.pathname.startsWith('/pjeconsulta/ConsultaPublica/listView.seam')) {
-      spec = init?.method === 'POST' ? script.searchAction!() : script.searchSession!()
+      spec = init?.method === 'POST'
+        ? await script.searchAction!(String(init.body ?? ''))
+        : await script.searchSession!()
     } else {
       throw new Error(`Unhandled URL in test fake: ${String(url)}`)
     }
@@ -260,6 +263,62 @@ describe('deepCase', () => {
     const second = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
     expect(second).toMatchObject({ documentsStored: 0, documentsSkipped: 2 })
     expect(requestLog.some((r) => r.includes('documentoSemLoginHTML'))).toBe(false)
+  })
+})
+
+describe('search bridge concurrency', () => {
+  // Found live: deepRange's worker pool shares one HttpClient — and so one
+  // cookie jar — across every worker. Two workers hitting the search bridge
+  // at once (both resolving a fresh id/ca, neither having one cached yet)
+  // can interleave their session bootstrap and POST, so one worker's request
+  // goes out carrying a submit param read from the OTHER worker's session
+  // page. Reproduced here by running two targets that both need the bridge
+  // concurrently against a client whose session/search responses are
+  // artificially delayed, and asserting only one bridge sequence is ever
+  // actually in flight.
+  const OTHER_NUMBER = '0013478-88.2026.4.05.0000'
+  const OTHER_CA = 'dd'.repeat(24)
+
+  it('serializes the search bridge instead of racing the shared cookie jar', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    const delay = () => new Promise((r) => setTimeout(r, 15))
+
+    const client = fakePortal({
+      searchSession: async () => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await delay()
+        inFlight--
+        return { body: listViewSession }
+      },
+      searchAction: async (body) => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await delay()
+        inFlight--
+        return body.includes(REAL_NUMBER)
+          ? { body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }
+          : { body: searchXmlFor(2, OTHER_NUMBER, OTHER_CA) }
+      },
+      // Only one summary PDF fixture is available; id 2's case is left to
+      // fail cleanly at that step (a normal 'absent' outcome) — what this
+      // test verifies is that both search-bridge resolutions ran without
+      // interleaving and each came back with its own number/id/ca, not a
+      // crossed one, not whether id 2's case fully completes.
+      summaryPdf: (id) => id === 1 ? { body: realSummaryPdf } : { body: errorHtml, url: 'https://x/error.seam' },
+      detail: () => ({ body: detailHtmlOnly }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const [a, b] = await Promise.all([
+      deepCase({ client, db, blobs }, { kind: 'number', number: REAL_NUMBER }),
+      deepCase({ client, db, blobs }, { kind: 'number', number: OTHER_NUMBER }),
+    ])
+
+    expect(maxInFlight).toBe(1)
+    expect(a).toMatchObject({ kind: 'done', idProcessoTrf: 1, number: REAL_NUMBER })
+    expect(b).toMatchObject({ kind: 'failed', ref: '2' })
   })
 })
 
