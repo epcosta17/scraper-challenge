@@ -1,6 +1,19 @@
 import type { Db } from '../db.ts'
 import type { StoredCase, Party } from '../types.ts'
 
+export class DuplicateCaseNumberError extends Error {
+  constructor(
+    readonly number: string,
+    readonly idProcessoTrf: number,
+  ) {
+    super(
+      `Case number ${number} is already stored under a different id_processo_trf ` +
+        `(attempted with id_processo_trf ${idProcessoTrf})`,
+    )
+    this.name = 'DuplicateCaseNumberError'
+  }
+}
+
 interface Row {
   id_processo_trf: number
   number: string
@@ -30,6 +43,23 @@ const toStored = (r: Row): StoredCase => ({
 })
 
 export function upsertCase(db: Db, c: StoredCase): void {
+  try {
+    runUpsert(db, c)
+  } catch (err) {
+    if (isUniqueConstraintOn(err, 'cases.number')) {
+      throw new DuplicateCaseNumberError(c.number, c.idProcessoTrf)
+    }
+    throw err
+  }
+}
+
+function isUniqueConstraintOn(err: unknown, column: string): boolean {
+  if (!(err instanceof Error)) return false
+  const code = (err as { code?: string }).code
+  return code === 'SQLITE_CONSTRAINT_UNIQUE' && err.message.includes(column)
+}
+
+function runUpsert(db: Db, c: StoredCase): void {
   db.prepare(`
     INSERT INTO cases (
       id_processo_trf, number, ca, class_code, class_name, court, panel,

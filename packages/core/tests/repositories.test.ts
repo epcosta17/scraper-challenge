@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   openDatabase, upsertCase, getCaseByNumber, getCaseById, getMaxCaseId,
   recordProbe, getProbedIds, recordFailure, listFailures, FsBlobStore,
+  DuplicateCaseNumberError,
 } from '../src/index.ts'
 
 const sample = {
@@ -55,6 +56,20 @@ describe('cases repository', () => {
     upsertCase(db, sample)
     upsertCase(db, { ...sample, idProcessoTrf: 130205, number: '0000001-11.2026.4.05.0000' })
     expect(getMaxCaseId(db)).toBe(130205)
+  })
+
+  it('rejects a different id_processo_trf carrying an already-used case number with a typed error', () => {
+    upsertCase(db, sample)
+    let caught: unknown
+    try {
+      upsertCase(db, { ...sample, idProcessoTrf: 999999 })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(DuplicateCaseNumberError)
+    const err = caught as DuplicateCaseNumberError
+    expect(err.number).toBe(sample.number)
+    expect(err.idProcessoTrf).toBe(999999)
   })
 })
 
