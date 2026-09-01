@@ -38,6 +38,15 @@ function looksLikeErrorSeam(finalUrl: string, body: Buffer): boolean {
 const TRANSIENT_RETRIES = 3
 const TRANSIENT_RETRY_DELAY_MS = 500
 
+export interface ClassifiedPdfOptions {
+  /**
+   * Called before each extra attempt, so a caller can say out loud that it
+   * is retrying and why. Without this the retries below are several silent
+   * seconds in the middle of a step that claimed to be fetching a PDF.
+   */
+  onRetry?: (r: { attempt: number; of: number; status: number; finalUrl: string }) => void
+}
+
 /**
  * Fetches a case summary PDF.
  *
@@ -60,8 +69,10 @@ const TRANSIENT_RETRY_DELAY_MS = 500
  *
  * Requires no session: the endpoint works cold, without cookies.
  */
-export async function fetchReportPdf(client: HttpClient, id: number): Promise<ReportResult> {
-  return fetchClassifiedPdf(client, reportPdfUrl(id))
+export async function fetchReportPdf(
+  client: HttpClient, id: number, opts: ClassifiedPdfOptions = {},
+): Promise<ReportResult> {
+  return fetchClassifiedPdf(client, reportPdfUrl(id), opts)
 }
 
 /**
@@ -72,7 +83,9 @@ export async function fetchReportPdf(client: HttpClient, id: number): Promise<Re
  * See `fetchReportPdf`'s doc comment for what each outcome means and why the
  * retry exists.
  */
-export async function fetchClassifiedPdf(client: HttpClient, url: string): Promise<ReportResult> {
+export async function fetchClassifiedPdf(
+  client: HttpClient, url: string, opts: ClassifiedPdfOptions = {},
+): Promise<ReportResult> {
   let last: { status: number; finalUrl: string } | undefined
 
   for (let attempt = 0; attempt <= TRANSIENT_RETRIES; attempt++) {
@@ -86,7 +99,10 @@ export async function fetchClassifiedPdf(client: HttpClient, url: string): Promi
     }
 
     last = { status: res.status, finalUrl: res.url }
-    if (attempt < TRANSIENT_RETRIES) await client.sleep(TRANSIENT_RETRY_DELAY_MS)
+    if (attempt < TRANSIENT_RETRIES) {
+      opts.onRetry?.({ attempt: attempt + 1, of: TRANSIENT_RETRIES + 1, status: res.status, finalUrl: res.url })
+      await client.sleep(TRANSIENT_RETRY_DELAY_MS)
+    }
   }
 
   return { kind: 'transient', status: last!.status, finalUrl: last!.finalUrl }

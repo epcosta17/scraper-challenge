@@ -8,7 +8,7 @@ import {
   getPartiesByCase, getMovementsByCase,
 } from '@pje/core'
 import { HttpClient } from '../src/http/client.ts'
-import { deepCase, deepRange, sanitizeFilename, documentPdfKeyFor } from '../src/crawl/deep.ts'
+import { deepCase, deepRange, sanitizeFilename, documentPdfKeyFor, type DeepStepEvent } from '../src/crawl/deep.ts'
 import type { BinaryDocumentRef } from '../src/pje/detail.ts'
 
 const fixture = (name: string) => readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)))
@@ -574,5 +574,130 @@ describe('deepRange', () => {
     expect(summary.casesDone).toBe(1)
     expect(summary.casesFailed).toBe(1)
     expect(summary.documentsStored).toBe(2) // the one successful case's 2 html docs
+  })
+})
+
+describe('deepCase — narration', () => {
+  it('narrates every step of the chain, in the order the chain runs them', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
+    })
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailWithDocs }),
+      binaryDoc: () => ({ body: samplePdf }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const steps: DeepStepEvent[] = []
+    await deepCase({ client, db, blobs }, { kind: 'id', id: 1 }, { onStep: (e) => steps.push(e) })
+
+    expect(steps.map((s) => s.kind)).toEqual([
+      'summary_pdf', 'summary_pdf_ok', 'detail_key', 'case_file', 'case_file_ok', 'documents',
+    ])
+    expect(steps).toContainEqual(expect.objectContaining({ kind: 'summary_pdf_ok', ref: '1', number: REAL_NUMBER }))
+    expect(steps).toContainEqual({ kind: 'detail_key', ref: '1', source: 'cached' })
+    expect(steps).toContainEqual({ kind: 'case_file_ok', ref: '1', documentCount: 10 })
+    expect(steps).toContainEqual({ kind: 'documents', ref: '1', total: 10, alreadyOnDisk: 0 })
+  })
+
+  it('says it is searching, not reusing, when there is no ca on file yet', async () => {
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => ({ body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const steps: DeepStepEvent[] = []
+    await deepCase({ client, db, blobs }, { kind: 'id', id: 1 }, { onStep: (e) => steps.push(e) })
+
+    expect(steps).toContainEqual({ kind: 'detail_key', ref: '1', source: 'search' })
+    expect(steps).not.toContainEqual(expect.objectContaining({ source: 'cached' }))
+  })
+
+  it('says a cached ca went stale rather than silently re-deriving it', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: STALE_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
+    })
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: (ca) => ({ body: ca === STALE_CA ? detailInvalidCa : detailHtmlOnlyMatchingMovements }),
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => ({ body: searchXmlFor(1, REAL_NUMBER, BRIDGED_CA) }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const steps: DeepStepEvent[] = []
+    await deepCase({ client, db, blobs }, { kind: 'id', id: 1 }, { onStep: (e) => steps.push(e) })
+
+    expect(steps.map((s) => s.kind)).toEqual([
+      'summary_pdf', 'summary_pdf_ok', 'detail_key', 'case_file', 'detail_key', 'case_file', 'case_file_ok', 'documents',
+    ])
+    expect(steps).toContainEqual({ kind: 'detail_key', ref: '1', source: 'stale' })
+  })
+
+  it('reports a search-bridge retry as it happens, with the reason the portal gave', async () => {
+    let searchAttempts = 0
+    const client = fakePortal({
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => {
+        searchAttempts++
+        return searchAttempts === 1
+          ? { body: Buffer.from('<partial-response></partial-response>', 'latin1') }
+          : { body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }
+      },
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const steps: DeepStepEvent[] = []
+    await deepCase({ client, db, blobs }, { kind: 'number', number: REAL_NUMBER }, { onStep: (e) => steps.push(e) })
+
+    const retry = steps.find((s) => s.kind === 'detail_key_retry')
+    expect(retry).toMatchObject({ kind: 'detail_key_retry', attempt: 1, of: 4 })
+    expect((retry as { reason: string }).reason).toMatch(/action/i)
+  })
+
+  it('reports a retried summary PDF, rather than going quiet for the extra attempts', async () => {
+    let attempts = 0
+    const client = fakePortal({
+      summaryPdf: () => (++attempts === 1 ? { body: Buffer.from('<html>nope</html>', 'latin1'), status: 404 } : { body: realSummaryPdf }),
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => ({ body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const steps: DeepStepEvent[] = []
+    await deepCase({ client, db, blobs }, { kind: 'id', id: 1 }, { onStep: (e) => steps.push(e) })
+
+    expect(steps).toContainEqual({ kind: 'summary_pdf_retry', ref: '1', attempt: 1, of: 4, status: 404 })
+  })
+
+  it('counts what is already on disk before the download starts, not after', async () => {
+    upsertCase(db, {
+      idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+      court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+      jurisdiction: null, courtAddress: null, referenceNumber: null,
+    })
+    const script = {
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailWithDocs }),
+      binaryDoc: () => ({ body: samplePdf }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    }
+    await deepCase({ client: fakePortal(script), db, blobs }, { kind: 'id', id: 1 })
+
+    const steps: DeepStepEvent[] = []
+    await deepCase({ client: fakePortal(script), db, blobs }, { kind: 'id', id: 1 }, { onStep: (e) => steps.push(e) })
+
+    expect(steps).toContainEqual({ kind: 'documents', ref: '1', total: 10, alreadyOnDisk: 10 })
   })
 })

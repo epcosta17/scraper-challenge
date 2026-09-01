@@ -33,19 +33,25 @@ export interface DeepDocumentProgress {
 }
 
 /**
- * Names each stage of the per-case chain (`resolveTarget` -> summary PDF ->
- * detail page) as it starts, so `--verbose` can print something within
- * seconds of a case beginning rather than only once the whole chain — up to
- * ~10s of requests — has finished. `case_start` fires first, carrying
- * whatever the caller already knows (an id for a range, a case number for a
- * single target) since the resolved case number itself isn't known until
- * the summary PDF has been parsed.
+ * Narrates the per-case chain: every slow step is announced as it *starts*
+ * (`summary_pdf`, `detail_key`, `case_file`, `documents`), and the ones
+ * whose result is worth saying out loud answer with their own `_ok` event.
+ * Retries get their own events too — the search bridge fails on roughly one
+ * run in four and silently retries, which used to look like a stall.
+ *
+ * Every event carries `ref` (the target as the caller named it: an id for a
+ * range, a case number for a single target) so a caller running several
+ * cases at once can attribute each line to the case that produced it.
  */
 export type DeepStepEvent =
-  | { kind: 'case_start'; ref: string }
-  | { kind: 'summary_pdf' }
-  | { kind: 'search_bridge' }
-  | { kind: 'detail_page'; documentCount: number }
+  | { kind: 'summary_pdf'; ref: string }
+  | { kind: 'summary_pdf_retry'; ref: string; attempt: number; of: number; status: number }
+  | { kind: 'summary_pdf_ok'; ref: string; idProcessoTrf: number; number: string; className: string | null }
+  | { kind: 'detail_key'; ref: string; source: 'cached' | 'search' | 'stale' }
+  | { kind: 'detail_key_retry'; ref: string; attempt: number; of: number; reason: string }
+  | { kind: 'case_file'; ref: string }
+  | { kind: 'case_file_ok'; ref: string; documentCount: number }
+  | { kind: 'documents'; ref: string; total: number; alreadyOnDisk: number }
 
 export interface DeepOptions {
   onDocumentProgress?: (p: DeepDocumentProgress) => void
@@ -270,6 +276,7 @@ const SEARCH_BRIDGE_RETRY_DELAY_MS = 500
  */
 async function searchForCa(
   lockClient: HttpClient, execClient: HttpClient, number: string,
+  onRetry?: (r: { attempt: number; of: number; reason: string }) => void,
 ): Promise<{ idProcessoTrf: number; ca: string }> {
   return runExclusive(lockClient, async () => {
     for (let attempt = 0; ; attempt++) {
@@ -281,24 +288,37 @@ async function searchForCa(
         return { idProcessoTrf: row.idProcessoTrf, ca: row.ca }
       } catch (err) {
         if (!(err instanceof ActionNotExecutedError) || attempt >= SEARCH_BRIDGE_RETRIES) throw err
+        // Only the first sentence: the rest of the message is advice for a
+        // developer reading a failure, not for someone watching a run.
+        onRetry?.({ attempt: attempt + 1, of: SEARCH_BRIDGE_RETRIES + 1, reason: err.message.split('. ')[0]! })
         await execClient.sleep(SEARCH_BRIDGE_RETRY_DELAY_MS)
       }
     }
   })
 }
 
-/** Resolves a target to an id and whatever `ca` is already on file for it (a cache, not a fact — see `fetchDetail`). */
+/**
+ * Resolves a target to an id and whatever `ca` is already on file for it (a
+ * cache, not a fact — see `fetchDetail`). `bridged` says whether that `ca`
+ * came from the search bridge just now rather than from storage, so the
+ * caller does not narrate "reusing the cached ca" about a `ca` it has this
+ * second gone and fetched.
+ */
 async function resolveTarget(
-  deps: DeepDeps, execClient: HttpClient, target: DeepTarget, onStep?: (e: DeepStepEvent) => void,
-): Promise<{ idProcessoTrf: number; ca: string | null }> {
+  deps: DeepDeps, execClient: HttpClient, target: DeepTarget, ref: string, onStep?: (e: DeepStepEvent) => void,
+): Promise<{ idProcessoTrf: number; ca: string | null; bridged: boolean }> {
   if (target.kind === 'id') {
     const stored = getCaseById(deps.db, target.id)
-    return { idProcessoTrf: target.id, ca: stored?.ca ?? null }
+    return { idProcessoTrf: target.id, ca: stored?.ca ?? null, bridged: false }
   }
   const stored = getCaseByNumber(deps.db, target.number)
-  if (stored) return { idProcessoTrf: stored.idProcessoTrf, ca: stored.ca }
-  onStep?.({ kind: 'search_bridge' })
-  return searchForCa(deps.client, execClient, target.number)
+  if (stored) return { idProcessoTrf: stored.idProcessoTrf, ca: stored.ca, bridged: false }
+  onStep?.({ kind: 'detail_key', ref, source: 'search' })
+  const bridged = await searchForCa(
+    deps.client, execClient, target.number,
+    (r) => onStep?.({ kind: 'detail_key_retry', ref, ...r }),
+  )
+  return { ...bridged, bridged: true }
 }
 
 /**
@@ -414,15 +434,15 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
   const targetRef = target.kind === 'id' ? String(target.id) : target.number
   let idProcessoTrf: number | undefined
 
-  opts.onStep?.({ kind: 'case_start', ref: targetRef })
-
   try {
-    const resolved = await resolveTarget(deps, caseClient, target, opts.onStep)
+    const resolved = await resolveTarget(deps, caseClient, target, targetRef, opts.onStep)
     idProcessoTrf = resolved.idProcessoTrf
     let ca = resolved.ca
 
-    opts.onStep?.({ kind: 'summary_pdf' })
-    const report = await fetchReportPdf(caseClient, idProcessoTrf)
+    opts.onStep?.({ kind: 'summary_pdf', ref: targetRef })
+    const report = await fetchReportPdf(caseClient, idProcessoTrf, {
+      onRetry: (r) => opts.onStep?.({ kind: 'summary_pdf_retry', ref: targetRef, attempt: r.attempt, of: r.of, status: r.status }),
+    })
     if (report.kind !== 'pdf') {
       throw new Error(
         report.kind === 'absent'
@@ -431,6 +451,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
       )
     }
     const record = parseCaseRecord(report.pdf)
+    opts.onStep?.({ kind: 'summary_pdf_ok', ref: targetRef, idProcessoTrf, number: record.number, className: record.className })
     const summaryKey = pdfKeyFor(record)
     // Row before blob — see `downloadOneDocument`'s comment; same reasoning
     // applies to the summary PDF (and is already established in enumerate.ts).
@@ -447,19 +468,28 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     const movements = parseMovements(report.pdf)
     replaceMovementsForCase(db, idProcessoTrf, movements)
 
-    let detail = ca ? await fetchDetail(caseClient, ca) : null
+    let detail: DetailResult | null = null
+    if (ca) {
+      if (!resolved.bridged) opts.onStep?.({ kind: 'detail_key', ref: targetRef, source: 'cached' })
+      opts.onStep?.({ kind: 'case_file', ref: targetRef })
+      detail = await fetchDetail(caseClient, ca)
+    }
     if (!detail || detail.kind !== 'valid') {
       // `ca` is absent or the detail page said it's stale: re-derive it
       // through the search bridge and update the stored value.
-      opts.onStep?.({ kind: 'search_bridge' })
-      const bridged = await searchForCa(deps.client, caseClient, record.number)
+      opts.onStep?.({ kind: 'detail_key', ref: targetRef, source: ca ? 'stale' : 'search' })
+      const bridged = await searchForCa(
+        deps.client, caseClient, record.number,
+        (r) => opts.onStep?.({ kind: 'detail_key_retry', ref: targetRef, ...r }),
+      )
       ca = bridged.ca
+      opts.onStep?.({ kind: 'case_file', ref: targetRef })
       detail = await fetchDetail(caseClient, ca)
       if (detail.kind !== 'valid') {
         throw new Error(`Detail page for case ${record.number} is still invalid right after refreshing ca.`)
       }
     }
-    opts.onStep?.({ kind: 'detail_page', documentCount: detail.documents.length })
+    opts.onStep?.({ kind: 'case_file_ok', ref: targetRef, documentCount: detail.documents.length })
     // Only known once the detail page is in hand, whichever branch above got
     // it — `jurisdiction`/`courtAddress`/`referenceNumber` (from
     // `processFields`) and the parties table both live there, not in the
@@ -473,12 +503,22 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     let stored = 0
     let skipped = 0
     let failed = 0
+    // Partitioned before the first download rather than discovered one
+    // document at a time, so the run can say up front how much work is
+    // actually left — "4 already on disk, nothing to fetch" is a different
+    // thing to watch than four downloads about to happen.
+    const onDisk: DocumentRef[] = []
+    const pending: DocumentRef[] = []
     for (const docRef of detail.documents) {
-      if (isDocumentDownloaded(db, docRef.id)) {
-        skipped++
-        opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'skipped' })
-        continue
-      }
+      (isDocumentDownloaded(db, docRef.id) ? onDisk : pending).push(docRef)
+    }
+    opts.onStep?.({ kind: 'documents', ref: targetRef, total: detail.documents.length, alreadyOnDisk: onDisk.length })
+
+    for (const docRef of onDisk) {
+      skipped++
+      opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'skipped' })
+    }
+    for (const docRef of pending) {
       try {
         await downloadOneDocument(deps, caseClient, idProcessoTrf, record.number, docRef)
         stored++
