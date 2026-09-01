@@ -184,6 +184,43 @@ describe('deepCase', () => {
     expect(getCaseById(db, 1)!.ca).toBe(VALID_CA)
   })
 
+  // Verified live: the search bridge intermittently fails with
+  // ActionNotExecutedError (no Ajax-Update-Ids header at all) reproducibly
+  // even at --concurrency 1, against a case whose search succeeds
+  // instantly when run alone right after — a genuine, if rare, portal
+  // hiccup rather than a client-side bug. A bounded retry (mirroring
+  // report.ts's TRANSIENT_RETRIES) absorbs it instead of failing the case.
+  it('retries the search bridge on a transient ActionNotExecutedError and still succeeds', async () => {
+    let searchAttempts = 0
+    const client = fakePortal({
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => {
+        searchAttempts++
+        return searchAttempts === 1
+          ? { body: Buffer.from('<partial-response></partial-response>', 'latin1') } // no Ajax-Update-Ids at all
+          : { body: searchXmlFor(1, REAL_NUMBER, VALID_CA) }
+      },
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnly }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'number', number: REAL_NUMBER })
+    expect(outcome).toMatchObject({ kind: 'done', idProcessoTrf: 1, number: REAL_NUMBER })
+    expect(searchAttempts).toBe(2)
+  })
+
+  it('gives up after exhausting search-bridge retries and records a case failure', async () => {
+    const client = fakePortal({
+      searchSession: () => ({ body: listViewSession }),
+      searchAction: () => ({ body: Buffer.from('<partial-response></partial-response>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'number', number: REAL_NUMBER })
+    expect(outcome.kind).toBe('failed')
+    expect(listFailures(db).map((f) => f.kind)).toContain('deep_case')
+  })
+
   it('resolves a previously recorded case-level failure once the case later succeeds', async () => {
     recordFailure(db, 'deep_case', REAL_NUMBER, 'fetch failed')
     const client = fakePortal({

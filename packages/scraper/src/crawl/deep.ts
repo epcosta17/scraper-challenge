@@ -7,7 +7,7 @@ import { HttpClient } from '../http/client.ts'
 import { CookieJar } from '../http/cookie-jar.ts'
 import { fetchReportPdf } from '../pje/report.ts'
 import { startSession } from '../pje/session.ts'
-import { search } from '../pje/search.ts'
+import { search, ActionNotExecutedError } from '../pje/search.ts'
 import { fetchDetail, type DocumentRef, type BinaryDocumentRef } from '../pje/detail.ts'
 import { downloadDocument } from '../pje/download.ts'
 import { parseCaseRecord, type CaseRecord } from '../pdf/parse.ts'
@@ -125,6 +125,20 @@ async function runExclusive<T>(lockOn: HttpClient, fn: () => Promise<T>): Promis
 }
 
 /**
+ * Extra attempts against a bridge sequence that fails with
+ * `ActionNotExecutedError` — verified live, reproducible even at
+ * `--concurrency 1` (so not a client-side race) and against a case whose
+ * search succeeds instantly run alone: a real, if intermittent, portal
+ * hiccup, not a submit-parameter bug, since a *fresh* session (a brand-new
+ * GET, not a retried POST against the old one) is what clears it. Each
+ * retry re-runs `startSession` too, for exactly that reason. Mirrors the
+ * `TRANSIENT_RETRIES` pattern already established in `report.ts` for the
+ * same class of problem on the summary PDF endpoint.
+ */
+const SEARCH_BRIDGE_RETRIES = 3
+const SEARCH_BRIDGE_RETRY_DELAY_MS = 500
+
+/**
  * Runs the search bridge for one case number, returning its id and a fresh
  * `ca`. `lockClient` is only an identity to queue behind (see
  * `runExclusive`); `execClient` is the one the actual requests run on —
@@ -136,11 +150,18 @@ async function searchForCa(
   lockClient: HttpClient, execClient: HttpClient, number: string,
 ): Promise<{ idProcessoTrf: number; ca: string }> {
   return runExclusive(lockClient, async () => {
-    const session = await startSession(execClient)
-    const outcome = await search(execClient, session, { number })
-    const row = outcome.rows.find((r) => r.number === number)
-    if (!row) throw new CaseNotFoundError(number)
-    return { idProcessoTrf: row.idProcessoTrf, ca: row.ca }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const session = await startSession(execClient)
+        const outcome = await search(execClient, session, { number })
+        const row = outcome.rows.find((r) => r.number === number)
+        if (!row) throw new CaseNotFoundError(number)
+        return { idProcessoTrf: row.idProcessoTrf, ca: row.ca }
+      } catch (err) {
+        if (!(err instanceof ActionNotExecutedError) || attempt >= SEARCH_BRIDGE_RETRIES) throw err
+        await execClient.sleep(SEARCH_BRIDGE_RETRY_DELAY_MS)
+      }
+    }
   })
 }
 
