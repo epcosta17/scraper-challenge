@@ -40,6 +40,20 @@ export function decodeLatin1(b: Buffer): string {
 }
 
 /**
+ * Pacing/backoff bookkeeping, pulled out of `HttpClient` itself so a client
+ * derived via `withJar` (an independent cookie jar for one logical
+ * conversation — the search bridge, or a whole `deep` case) can share the
+ * SAME mutable schedule as the client it was derived from, rather than each
+ * starting its own clock at zero. Sharing this is what keeps the aggregate
+ * rate limit meaningful across every worker and every derived client, not
+ * just within one instance.
+ */
+interface PaceState {
+  nextSlot: number
+  attemptCount: number
+}
+
+/**
  * The single network chokepoint. Everything that touches the PJe portal goes
  * through here so rate limiting, retries and 429 handling exist in one place.
  */
@@ -56,27 +70,51 @@ export class HttpClient {
   private readonly minIntervalMs: number
   private readonly backoff: Partial<BackoffOptions>
   private readonly userAgent: string
-  private nextSlot = 0
-  private attemptCount = 0
+  private readonly pacing: PaceState
 
-  constructor(o: HttpClientOptions = {}) {
+  constructor(o: HttpClientOptions = {}, pacing?: PaceState) {
     this.jar = o.jar ?? new CookieJar()
     this.fetchImpl = o.fetchImpl ?? fetch
     this.sleep = o.sleep ?? defaultSleep
     this.minIntervalMs = o.rps && o.rps > 0 ? 1000 / o.rps : 0
     this.backoff = o.backoff ?? {}
     this.userAgent = o.userAgent ?? DEFAULT_UA
+    this.pacing = pacing ?? { nextSlot: 0, attemptCount: 0 }
   }
 
   get attempts(): number {
-    return this.attemptCount
+    return this.pacing.attemptCount
+  }
+
+  /**
+   * A client for one isolated cookie conversation (a login-like sequence, or
+   * a whole `deep` case) that must not share a jar with concurrent unrelated
+   * requests — a plain shared jar lets one worker's `Set-Cookie` silently
+   * overwrite another's session mid-sequence, which is exactly the shape of
+   * bug this was built to fix (see `deep.ts`'s `caseClient`). Pacing/backoff/
+   * transport are all shared with `this` via the same `PaceState` object, so
+   * the aggregate rate limit still holds across every client derived this
+   * way — only the cookie jar is actually independent.
+   */
+  withJar(jar: CookieJar): HttpClient {
+    return new HttpClient(
+      {
+        rps: this.minIntervalMs > 0 ? 1000 / this.minIntervalMs : 0,
+        backoff: this.backoff,
+        fetchImpl: this.fetchImpl,
+        sleep: this.sleep,
+        userAgent: this.userAgent,
+        jar,
+      },
+      this.pacing,
+    )
   }
 
   private async pace(): Promise<void> {
     if (this.minIntervalMs === 0) return
     const now = Date.now()
-    const wait = Math.max(0, this.nextSlot - now)
-    this.nextSlot = Math.max(now, this.nextSlot) + this.minIntervalMs
+    const wait = Math.max(0, this.pacing.nextSlot - now)
+    this.pacing.nextSlot = Math.max(now, this.pacing.nextSlot) + this.minIntervalMs
     if (wait > 0) await this.sleep(wait)
   }
 
@@ -90,7 +128,7 @@ export class HttpClient {
    * pacing instead of fighting it.
    */
   private bumpNextSlot(delayMs: number): void {
-    this.nextSlot = Math.max(this.nextSlot, Date.now() + delayMs)
+    this.pacing.nextSlot = Math.max(this.pacing.nextSlot, Date.now() + delayMs)
   }
 
   async request(url: string, init: RequestInit = {}): Promise<HttpResponse> {
@@ -98,7 +136,7 @@ export class HttpClient {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await this.pace()
-      this.attemptCount++
+      this.pacing.attemptCount++
 
       const cookie = this.jar.header()
       const headers = new Headers(init.headers)

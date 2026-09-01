@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { HttpClient, RateLimitedError, decodeLatin1 } from '../src/http/client.ts'
+import { CookieJar } from '../src/http/cookie-jar.ts'
 import { DEFAULT_BACKOFF } from '../src/http/backoff.ts'
 
 /** Builds a fetch stub that replays the given responses in order. */
@@ -132,6 +133,56 @@ describe('HttpClient', () => {
     })
     await client.request('https://example.test/x')
     expect(waits[0]).toBeLessThanOrEqual(DEFAULT_BACKOFF.capMs)
+  })
+})
+
+describe('withJar', () => {
+  // Motivated by a real bug found live: `deep`'s search bridge (session
+  // GET + search POST) and its per-document downloads shared one
+  // `HttpClient`, and so one cookie jar, across an entire range. A
+  // concurrent, unrelated request for a DIFFERENT case landing in between
+  // could overwrite the jar's session cookie underneath a case's own
+  // multi-request sequence, breaking it with no indication anything about
+  // that case itself was wrong. `withJar` gives one logical sequence
+  // (one case's whole `deep` chain) an isolated jar without losing the
+  // pacing/backoff coordination that keeps the aggregate rate across every
+  // worker — see `deep.ts`'s per-case `caseClient`.
+  it('shares pacing state with the parent client, not a fresh clock', async () => {
+    const waits: number[] = []
+    const f = stubFetch([{ status: 200, body: 'a' }, { status: 200, body: 'b' }])
+    const parent = new HttpClient({ fetchImpl: f.impl, rps: 10, sleep: async (ms) => { waits.push(ms) } })
+    const child = parent.withJar(new CookieJar())
+
+    await parent.request('https://example.test/a')
+    await child.request('https://example.test/b')
+
+    // If the child had its own independent pacing clock (e.g. from
+    // constructing a brand-new HttpClient), this second request would fire
+    // immediately (wait 0, no sleep call at all) instead of queuing behind
+    // the parent's first request at the shared ~100ms interval.
+    expect(waits).toHaveLength(1)
+    expect(waits[0]).toBeGreaterThanOrEqual(90)
+    expect(waits[0]).toBeLessThanOrEqual(110)
+  })
+
+  it('gives the derived client its own cookie jar, independent of the parent', async () => {
+    const f = stubFetch([{ status: 200, body: 'ok', headers: { 'set-cookie': 'JSESSIONID=parent-session' } }])
+    const parent = new HttpClient({ fetchImpl: f.impl, sleep: noSleep, rps: 0 })
+    await parent.request('https://example.test/a')
+    expect(parent.jar.header()).toContain('JSESSIONID=parent-session')
+
+    const child = parent.withJar(new CookieJar())
+    expect(child.jar.header()).toBe('')
+    expect(child.jar).not.toBe(parent.jar)
+  })
+
+  it('lets the derived client accumulate its own cookies without touching the parent\'s', async () => {
+    const f = stubFetch([{ status: 200, body: 'ok', headers: { 'set-cookie': 'JSESSIONID=child-session' } }])
+    const parent = new HttpClient({ fetchImpl: f.impl, sleep: noSleep, rps: 0 })
+    const child = parent.withJar(new CookieJar())
+    await child.request('https://example.test/a')
+    expect(child.jar.header()).toContain('JSESSIONID=child-session')
+    expect(parent.jar.header()).toBe('')
   })
 })
 
