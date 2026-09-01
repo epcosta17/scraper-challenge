@@ -32,8 +32,24 @@ export interface DeepDocumentProgress {
   outcome: 'stored' | 'skipped' | 'failed'
 }
 
+/**
+ * Names each stage of the per-case chain (`resolveTarget` -> summary PDF ->
+ * detail page) as it starts, so `--verbose` can print something within
+ * seconds of a case beginning rather than only once the whole chain — up to
+ * ~10s of requests — has finished. `case_start` fires first, carrying
+ * whatever the caller already knows (an id for a range, a case number for a
+ * single target) since the resolved case number itself isn't known until
+ * the summary PDF has been parsed.
+ */
+export type DeepStepEvent =
+  | { kind: 'case_start'; ref: string }
+  | { kind: 'summary_pdf' }
+  | { kind: 'search_bridge' }
+  | { kind: 'detail_page'; documentCount: number }
+
 export interface DeepOptions {
   onDocumentProgress?: (p: DeepDocumentProgress) => void
+  onStep?: (e: DeepStepEvent) => void
 }
 
 export type DeepCaseOutcome =
@@ -273,7 +289,7 @@ async function searchForCa(
 
 /** Resolves a target to an id and whatever `ca` is already on file for it (a cache, not a fact — see `fetchDetail`). */
 async function resolveTarget(
-  deps: DeepDeps, execClient: HttpClient, target: DeepTarget,
+  deps: DeepDeps, execClient: HttpClient, target: DeepTarget, onStep?: (e: DeepStepEvent) => void,
 ): Promise<{ idProcessoTrf: number; ca: string | null }> {
   if (target.kind === 'id') {
     const stored = getCaseById(deps.db, target.id)
@@ -281,6 +297,7 @@ async function resolveTarget(
   }
   const stored = getCaseByNumber(deps.db, target.number)
   if (stored) return { idProcessoTrf: stored.idProcessoTrf, ca: stored.ca }
+  onStep?.({ kind: 'search_bridge' })
   return searchForCa(deps.client, execClient, target.number)
 }
 
@@ -397,11 +414,14 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
   const targetRef = target.kind === 'id' ? String(target.id) : target.number
   let idProcessoTrf: number | undefined
 
+  opts.onStep?.({ kind: 'case_start', ref: targetRef })
+
   try {
-    const resolved = await resolveTarget(deps, caseClient, target)
+    const resolved = await resolveTarget(deps, caseClient, target, opts.onStep)
     idProcessoTrf = resolved.idProcessoTrf
     let ca = resolved.ca
 
+    opts.onStep?.({ kind: 'summary_pdf' })
     const report = await fetchReportPdf(caseClient, idProcessoTrf)
     if (report.kind !== 'pdf') {
       throw new Error(
@@ -431,6 +451,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     if (!detail || detail.kind !== 'valid') {
       // `ca` is absent or the detail page said it's stale: re-derive it
       // through the search bridge and update the stored value.
+      opts.onStep?.({ kind: 'search_bridge' })
       const bridged = await searchForCa(deps.client, caseClient, record.number)
       ca = bridged.ca
       detail = await fetchDetail(caseClient, ca)
@@ -438,6 +459,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
         throw new Error(`Detail page for case ${record.number} is still invalid right after refreshing ca.`)
       }
     }
+    opts.onStep?.({ kind: 'detail_page', documentCount: detail.documents.length })
     // Only known once the detail page is in hand, whichever branch above got
     // it — `jurisdiction`/`courtAddress`/`referenceNumber` (from
     // `processFields`) and the parties table both live there, not in the
@@ -522,7 +544,7 @@ export async function deepRange(deps: DeepDeps, opts: DeepRangeOptions): Promise
     for (;;) {
       const id = takeId()
       if (id === null) return
-      const outcome = await deepCase(deps, { kind: 'id', id }, { onDocumentProgress: opts.onDocumentProgress })
+      const outcome = await deepCase(deps, { kind: 'id', id }, { onDocumentProgress: opts.onDocumentProgress, onStep: opts.onStep })
       if (outcome.kind === 'done') {
         summary.casesDone++
         summary.documentsStored += outcome.documentsStored
