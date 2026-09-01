@@ -3,13 +3,32 @@ import { HttpClient } from '../http/client.ts'
 import { startSession } from '../pje/session.ts'
 import { search, validateFilters, SearchValidationError } from '../pje/search.ts'
 import { crawl } from '../crawl/enumerate.ts'
+import { deepCase, deepRange, type DeepTarget } from '../crawl/deep.ts'
 import { parseArgs, helpText, validateCommandUsage, ArgsError } from './args.ts'
-import { progressLine, summaryLines, cappedWarning } from './format.ts'
+import {
+  progressLine, summaryLines, cappedWarning,
+  deepDocumentProgressLine, deepCaseOutcomeLines, deepRangeSummaryLines,
+} from './format.ts'
 import { SCRAPER_VERSION } from '../version.ts'
 
 export interface MainOptions {
   /** Overrides the network transport — the seam tests use to prove no request went out. */
   fetchImpl?: typeof fetch
+}
+
+/** A bare integer is an internal idProcessoTrf; anything else is a case number, as typed. */
+function deepTargetFrom(positional: string): DeepTarget {
+  return /^\d+$/.test(positional) ? { kind: 'id', id: Number(positional) } : { kind: 'number', number: positional }
+}
+
+/** Prints the same "re-run to retry" hint `crawl` prints, worded for `command`. */
+function reportUnresolvedFailures(db: Parameters<typeof listFailures>[0], command: string): void {
+  const unresolved = listFailures(db, { unresolvedOnly: true })
+  if (unresolved.length === 0) return
+  console.log(
+    `\n${unresolved.length} unresolved failure(s) recorded. Re-run '${command}' over the same ` +
+    'target(s) to retry — already-downloaded documents are skipped, so a retry only redoes the work that failed.',
+  )
 }
 
 /**
@@ -40,7 +59,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
     // misinterpretation) — all before any network call.
     validateCommandUsage(args)
 
-    if (args.command === 'case' || args.command === 'deep') {
+    if (args.command === 'case') {
       console.error(
         `Command "${args.command}" is a phase-2 feature and is not implemented yet. ` +
         "Use 'search' to find a case, or 'crawl' to enumerate cases and download summary PDFs.",
@@ -72,6 +91,45 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         if (outcome.capped) console.log(cappedWarning())
       }
       return 0
+    }
+
+    if (args.command === 'deep') {
+      // validateCommandUsage already guaranteed exactly one form: a single
+      // positional, or a full --from-id/--to-id range.
+      const isRange = args.fromId !== undefined && args.toId !== undefined
+      if (args.dryRun) {
+        console.log(
+          isRange
+            ? `Would deep-fetch every case from id ${args.fromId} to ${args.toId}`
+            : `Would deep-fetch case ${args.positional[0]}`,
+        )
+        return 0
+      }
+
+      const db = openDatabase(args.db)
+      const blobs = new FsBlobStore(args.out)
+      const onDocumentProgress = args.verbose ? (p: Parameters<typeof deepDocumentProgressLine>[0]) => console.log(deepDocumentProgressLine(p)) : undefined
+      try {
+        if (isRange) {
+          const summary = await deepRange({ client, db, blobs }, {
+            fromId: args.fromId!,
+            toId: args.toId!,
+            concurrency: args.concurrency,
+            onDocumentProgress,
+            onCaseProgress: args.verbose ? (o) => console.log(deepCaseOutcomeLines(o)) : undefined,
+          })
+          console.log(args.json ? JSON.stringify(summary, null, 2) : deepRangeSummaryLines(summary))
+          reportUnresolvedFailures(db, 'deep')
+          return summary.casesFailed > 0 || summary.documentsFailed > 0 ? 1 : 0
+        }
+
+        const outcome = await deepCase({ client, db, blobs }, deepTargetFrom(args.positional[0]!), { onDocumentProgress })
+        console.log(args.json ? JSON.stringify(outcome, null, 2) : deepCaseOutcomeLines(outcome))
+        reportUnresolvedFailures(db, 'deep')
+        return outcome.kind === 'failed' || outcome.documentsFailed > 0 ? 1 : 0
+      } finally {
+        db.close()
+      }
     }
 
     // args.command is 'crawl' | 'daily' here — 'daily' is a crawl with no

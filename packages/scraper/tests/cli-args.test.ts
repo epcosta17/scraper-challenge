@@ -160,4 +160,46 @@ describe('validateCommandUsage', () => {
     const a = parseArgs(['daily', 'x'])
     expect(() => validateCommandUsage(a)).toThrow(ArgsError)
   })
+
+  describe('deep', () => {
+    it('accepts a single case-number positional', () => {
+      const a = parseArgs(['deep', '0013201-41.2025.4.05.8202'])
+      expect(() => validateCommandUsage(a)).not.toThrow()
+    })
+
+    it('accepts a single bare-id positional', () => {
+      const a = parseArgs(['deep', '130100'])
+      expect(() => validateCommandUsage(a)).not.toThrow()
+    })
+
+    it('accepts an explicit --from-id/--to-id range', () => {
+      const a = parseArgs(['deep', '--from-id', '130100', '--to-id', '130120'])
+      expect(() => validateCommandUsage(a)).not.toThrow()
+    })
+
+    it('rejects neither a positional nor a range', () => {
+      const a = parseArgs(['deep'])
+      expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+    })
+
+    it('rejects both a positional and a range', () => {
+      const a = parseArgs(['deep', '130100', '--from-id', '1', '--to-id', '2'])
+      expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+    })
+
+    it('rejects --from-id without --to-id', () => {
+      const a = parseArgs(['deep', '--from-id', '130100'])
+      expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+    })
+
+    it('rejects --to-id without --from-id', () => {
+      const a = parseArgs(['deep', '--to-id', '130120'])
+      expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+    })
+
+    it('rejects more than one positional argument', () => {
+      const a = parseArgs(['deep', '130100', '130101'])
+      expect(() => validateCommandUsage(a)).toThrow(ArgsError)
+    })
+  })
 })

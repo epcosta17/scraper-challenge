@@ -120,6 +120,87 @@ describe('main — rejects positional arguments before touching the network', ()
   })
 })
 
+describe('main — deep', () => {
+  let dir: string
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('rejects a deep call with neither a target nor a range, before touching the network', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+    const code = await main(['deep'], { fetchImpl })
+    expect(code).toBe(2)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('--dry-run prints the plan and stays off the network and disk', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-deep-dryrun-'))
+    const dbPath = join(dir, 'test.db')
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    const code = await main(
+      ['deep', '0013201-41.2025.4.05.8202', '--dry-run', '--db', dbPath],
+      { fetchImpl },
+    )
+
+    expect(code).toBe(0)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(existsSync(dbPath)).toBe(false)
+  })
+
+  it('runs the whole chain end to end for a bare-id target and exits 0', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'pje-cli-deep-run-'))
+    const dbPath = join(dir, 'test.db')
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const detailHtmlOnly = readFileSync(
+      fileURLToPath(new URL('./fixtures/detail-html-docs-only.html', import.meta.url)),
+    )
+    const listViewSession = readFileSync(
+      fileURLToPath(new URL('./fixtures/list-view.html', import.meta.url)),
+    )
+
+    // A fresh id has no stored ca, so `deep` must run the search bridge
+    // before it can even reach the detail page — this fake portal covers
+    // every hop of the chain: summary PDF, session bootstrap, search AJAX,
+    // detail page, and the HTML document endpoint.
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = new URL(String(url))
+      if (u.pathname.endsWith('/reportPDF.seam')) return new Response(realPdf, { status: 200 })
+      if (u.pathname.endsWith('/documentoSemLoginHTML.seam')) {
+        return new Response(Buffer.from('<html>ato</html>', 'latin1'), { status: 200 })
+      }
+      if (u.pathname.endsWith('/DetalheProcessoConsultaPublica/listView.seam')) {
+        return new Response(detailHtmlOnly, { status: 200 })
+      }
+      if (u.pathname.startsWith('/pjeconsulta/ConsultaPublica/listView.seam')) {
+        if (init?.method === 'POST') {
+          const xml =
+            `<partial-response><meta name="Ajax-Update-Ids" content="fPP:processosGridPanel" />` +
+            `<div id="fPP:processosTable:130100:j_id1">0013475-36.2026.4.05.0000` +
+            `<a href="listView.seam?ca=${'ca'.repeat(24)}">detail</a></div></partial-response>`
+          return new Response(Buffer.from(xml, 'latin1'), { status: 200 })
+        }
+        return new Response(listViewSession, { status: 200 })
+      }
+      throw new Error(`unexpected request in test: ${String(url)}`)
+    }) as unknown as typeof fetch
+
+    const code = await main(
+      ['deep', '130100', '--db', dbPath, '--out', join(dir, 'pdfs'), '--rate', '1000'],
+      { fetchImpl },
+    )
+
+    expect(code).toBe(0)
+  })
+})
+
 describe('main — crawl exit code reflects whether the run recorded failures', () => {
   let dir: string
   let logSpy: ReturnType<typeof vi.spyOn>

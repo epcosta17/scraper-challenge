@@ -164,6 +164,31 @@ export function validateCommandUsage(args: ParsedArgs): void {
       "--to-id. Use 'crawl' if you need an explicit id range.",
     )
   }
+
+  if (args.command === 'deep') {
+    const hasRange = args.fromId !== undefined || args.toId !== undefined
+    const hasFullRange = args.fromId !== undefined && args.toId !== undefined
+    if (hasRange && !hasFullRange) {
+      throw new ArgsError("'deep' requires both --from-id and --to-id together for a range.")
+    }
+    if (args.positional.length > 1) {
+      throw new ArgsError(
+        `'deep' takes exactly one positional argument (a case number or internal id), got ` +
+        `${args.positional.length}.`,
+      )
+    }
+    if (args.positional.length === 1 && hasFullRange) {
+      throw new ArgsError(
+        "'deep' accepts either a single case number/id or --from-id/--to-id, not both.",
+      )
+    }
+    if (args.positional.length === 0 && !hasFullRange) {
+      throw new ArgsError(
+        "'deep' requires either a case number/id argument or --from-id/--to-id " +
+        '(e.g. `deep 0013201-41.2025.4.05.8202` or `deep --from-id 130100 --to-id 130120`).',
+      )
+    }
+  }
 }
 
 export function helpText(): string {
@@ -171,6 +196,8 @@ export function helpText(): string {
 
 USAGE
   scraper <command> [options]
+  scraper deep <number|id>
+  scraper deep --from-id <n> --to-id <n>
   scraper --version | -v      Print the installed version and exit
   scraper --help | -h         Print this message and exit
 
@@ -178,8 +205,19 @@ COMMANDS
   search   Query the portal's own search form (faithful to the website)
   crawl    Enumerate cases by internal id and download summary PDFs
   case     Fetch a single case by number or internal id (phase 2, not yet implemented)
-  deep     Fetch a case and download every document PDF in its file (phase 2, not yet implemented)
+  deep     Fetch a case (by number or internal id, or a --from-id/--to-id range)
+           and download every document in its file, PDFs and HTML alike
   daily    Advance the watermark: scrape only cases newer than the last run
+
+DEEP TARGET (exactly one form; see USAGE above)
+  <number|id>           a case number (e.g. 0013201-41.2025.4.05.8202) or a bare
+                         internal idProcessoTrf (e.g. 130100) — not both, and not
+                         combined with --from-id/--to-id
+  --from-id/--to-id      an explicit id range, one case per id (see CRAWL RANGE
+                         below) — always given together, never alone
+
+  A single case costs roughly 11 requests: 1 summary PDF + 1 search (skipped
+  when a still-valid ca is already on file) + 1 detail page + ~9 documents.
 
 SEARCH FILTERS (mirror the website's form)
   --number <n>          exact CNJ case number
