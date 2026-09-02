@@ -437,3 +437,34 @@ describe('FsBlobStore', () => {
     await expect(store.put(key, Buffer.from('x'))).rejects.toThrow()
   })
 })
+
+describe('a failure remembers which case it belongs to', () => {
+  /**
+   * Without this a document failure can be read but not retried. Its `ref` is
+   * the document's own id, and for an unrecognised link that is a synthetic
+   * hash of the href — it names nothing anybody can act on. The case was known
+   * at the moment of recording; keeping it is the difference between a list of
+   * complaints and a list of jobs to re-run.
+   */
+  it('stores the case beside the failure', () => {
+    recordFailure(db, 'document', '999', 'unrecognised link', 130105)
+    const [row] = listFailures(db, { unresolvedOnly: true })
+    expect(row!.idProcessoTrf).toBe(130105)
+  })
+
+  it('leaves it null for a failure that is about no case in particular', () => {
+    recordFailure(db, 'summary_pdf', '42', 'no case number in the PDF text')
+    const [row] = listFailures(db, { unresolvedOnly: true })
+    expect(row!.idProcessoTrf).toBeNull()
+  })
+
+  it('keeps the case a later retry no longer knows', () => {
+    // A second attempt that fails for a reason with no case attached must not
+    // erase what the first one did know.
+    recordFailure(db, 'document', '999', 'unrecognised link', 130105)
+    recordFailure(db, 'document', '999', 'timed out')
+    const [row] = listFailures(db, { unresolvedOnly: true })
+    expect(row!.idProcessoTrf).toBe(130105)
+    expect(row!.attempts).toBe(2)
+  })
+})

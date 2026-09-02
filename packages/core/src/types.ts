@@ -72,6 +72,12 @@ export interface Failure {
   attempts: number
   lastAttemptAt: string
   resolvedAt: string | null
+  /**
+   * The case this failure belongs to, when it belongs to one. Null for a
+   * failure about something else, and on rows written before the column
+   * existed. It is what lets a failure be retried rather than only read.
+   */
+  idProcessoTrf: number | null
 }
 
 /**

@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS failures (
   attempts        INTEGER NOT NULL DEFAULT 1,
   last_attempt_at TEXT NOT NULL,
   resolved_at     TEXT,
+  -- Which case this failure belongs to, when it belongs to one.
+  --
+  -- The ref names the thing that failed, and for a document that is its own
+  -- id — which for an unrecognised link is a synthetic hash of the href, and
+  -- so names nothing anybody can act on. Without this column a document failure
+  -- could be read but not retried: the case that would fix it was known at
+  -- the moment it was recorded and then thrown away. Null for a failure that
+  -- is not about a case, and on rows written before this column existed.
+  id_processo_trf INTEGER,
   UNIQUE (kind, ref)
 );
 
@@ -188,6 +197,7 @@ const COLUMN_MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: str
   { table: 'jobs', column: 'progress_total_is_estimate', ddl: 'ALTER TABLE jobs ADD COLUMN progress_total_is_estimate INTEGER NOT NULL DEFAULT 0' },
   { table: 'jobs', column: 'heartbeat_at', ddl: 'ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT' },
   { table: 'jobs', column: 'stage', ddl: 'ALTER TABLE jobs ADD COLUMN stage TEXT' },
+  { table: 'failures', column: 'id_processo_trf', ddl: 'ALTER TABLE failures ADD COLUMN id_processo_trf INTEGER' },
 ]
 
 export function migrateSchema(db: Db): void {
