@@ -618,6 +618,9 @@ const found = outcome !== null && outcome.ok ? outcome : null
 <style>
   /* The date field, and the calendar that drops out of it. */
   .date { position: relative; }
+  /* The second of the pair opens its calendar leftwards, so a 236px panel
+     never hangs off the side of the column. */
+  .pair > .date:last-child :global(.cal) { left: auto; right: 0; }
   .date .input { width: 100%; padding-right: 32px; }
   .date__open {
     position: absolute;
@@ -635,77 +638,6 @@ const found = outcome !== null && outcome.ok ? outcome : null
     cursor: pointer;
   }
   .date__open:hover { color: var(--ink); }
-
-  .cal {
-    position: absolute;
-    top: calc(100% + 5px);
-    left: 0;
-    z-index: 30;
-    width: 236px;
-    padding: 10px;
-    border: 1px solid var(--line-strong);
-    background: var(--paper);
-    box-shadow: 0 6px 24px rgb(17 17 17 / 12%);
-  }
-  .cal__head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-  .cal__month { font-size: 12px; color: var(--ink); }
-  .cal__nav {
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    border: 1px solid transparent;
-    background: none;
-    font: inherit;
-    font-size: 15px;
-    line-height: 1;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  .cal__nav:hover { border-color: var(--line); color: var(--ink); }
-
-  .cal__grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
-  .cal__grid--head {
-    margin-bottom: 3px;
-    font-size: 10px;
-    color: var(--ink-3);
-    text-align: center;
-  }
-  .cal__pad { display: block; }
-  .cal__day {
-    aspect-ratio: 1;
-    padding: 0;
-    border: 1px solid transparent;
-    background: none;
-    font: inherit;
-    font-size: 11px;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  .cal__day:hover { border-color: var(--line-strong); color: var(--ink); }
-  /* Today is outlined, the chosen day is filled: one is where you are, the
-     other is what you picked, and they must not look like the same thing. */
-  .cal__day.is-today { border-color: var(--line); }
-  .cal__day.is-picked { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-
-  .cal__today {
-    width: 100%;
-    margin-top: 8px;
-    padding: 4px;
-    border: 1px solid var(--line);
-    background: none;
-    font: inherit;
-    font-size: 11px;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  .cal__today:hover { border-color: var(--line-strong); color: var(--ink); }
-
-
   /* The rules: a panel that floats over the page, on hover or focus. */
   .rules { position: relative; display: inline-block; margin-top: 10px; }
   .rules__ask {
@@ -914,4 +846,85 @@ const found = outcome !== null && outcome.ok ? outcome : null
     .hit__head { grid-template-columns: 1fr; gap: 4px; }
     .hit__organ { text-align: left; }
   }
+</style>
+
+<style is:global>
+  /*
+    The calendar panel is built in the browser, so it never carries the
+    attribute Astro scopes styles with — scoped rules would not match a
+    single one of its elements. Global, therefore, and every selector kept
+    under `.cal` so that global does not mean loose.
+  */
+  .cal {
+    position: absolute;
+    top: calc(100% + 5px);
+    /* Anchored to the right in the second field so the panel does not run off
+       the edge of a narrow sidebar. */
+    left: 0;
+    z-index: 30;
+    width: 236px;
+    padding: 10px;
+    border: 1px solid var(--line-strong);
+    background: var(--paper);
+    box-shadow: 0 6px 24px rgb(17 17 17 / 12%);
+  }
+  .cal__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .cal__month { font-size: 12px; color: var(--ink); }
+  .cal__nav {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .cal__nav:hover { border-color: var(--line); color: var(--ink); }
+
+  .cal__grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+  .cal__grid--head {
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10px;
+    color: var(--ink-3);
+    text-align: center;
+  }
+  .cal__pad { display: block; }
+  .cal__day {
+    aspect-ratio: 1;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .cal__day:hover { border-color: var(--line-strong); color: var(--ink); }
+  /* Today is outlined, the chosen day is filled: one is where you are, the
+     other is what you picked, and they must not look like the same thing. */
+  .cal__day.is-today { border-color: var(--line); }
+  .cal__day.is-picked { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+
+  .cal__today {
+    width: 100%;
+    margin-top: 8px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    background: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .cal__today:hover { border-color: var(--line-strong); color: var(--ink); }
 </style>
