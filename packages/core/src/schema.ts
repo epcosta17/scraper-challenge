@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS failures (
 -- \`started_at\`/\`finished_at\` describe the *current* attempt, not the first
 -- one: a retry clears them (see \`failJob\`), so "pending with attempts = 2"
 -- reads as what it is.
+--
+-- \`progress_done\`/\`progress_total\` live here, on the job's own row, rather
+-- than in a table of their own: they are one-to-one with a job, every writer
+-- of them already holds that row (the worker that claimed it), and every
+-- reader of them is already selecting it, so a separate table would buy a
+-- join and a second lifecycle to keep in step for nothing. They describe the
+-- *current* attempt and are reset whenever the job goes back to the queue.
+--
+-- \`heartbeat_at\` is the lease. A worker refreshes it while it works, and
+-- \`reclaimStaleJobs\` uses its age to tell a job still being worked on from
+-- one stranded \`running\` forever by a worker that was killed. Without it a
+-- SIGKILL leaves a row no other worker will ever claim.
 CREATE TABLE IF NOT EXISTS jobs (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   type         TEXT NOT NULL,
@@ -122,7 +134,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at   TEXT NOT NULL,
   started_at   TEXT,
   finished_at  TEXT,
-  error        TEXT
+  error        TEXT,
+  progress_done              INTEGER NOT NULL DEFAULT 0,
+  progress_total             INTEGER,
+  progress_total_is_estimate INTEGER NOT NULL DEFAULT 0,
+  heartbeat_at               TEXT
 );
 
 -- The index \`claimNextJob\` rides: its inner SELECT is
@@ -150,14 +166,25 @@ function hasColumn(db: Db, table: string, column: string): boolean {
   return rows.some((r) => r.name === column)
 }
 
-const CASE_COLUMN_MIGRATIONS: ReadonlyArray<{ column: string; ddl: string }> = [
-  { column: 'jurisdiction', ddl: 'ALTER TABLE cases ADD COLUMN jurisdiction TEXT' },
-  { column: 'court_address', ddl: 'ALTER TABLE cases ADD COLUMN court_address TEXT' },
-  { column: 'reference_number', ddl: 'ALTER TABLE cases ADD COLUMN reference_number TEXT' },
+/**
+ * Every column added to a table after that table first shipped, with the
+ * `ALTER` that adds it. Guarded one by one against `PRAGMA table_info`, so
+ * running the whole list on a database that already has them is a no-op.
+ * SQLite accepts `NOT NULL` in an `ADD COLUMN` as long as a default comes
+ * with it — which is what backfills the existing rows.
+ */
+const COLUMN_MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: string }> = [
+  { table: 'cases', column: 'jurisdiction', ddl: 'ALTER TABLE cases ADD COLUMN jurisdiction TEXT' },
+  { table: 'cases', column: 'court_address', ddl: 'ALTER TABLE cases ADD COLUMN court_address TEXT' },
+  { table: 'cases', column: 'reference_number', ddl: 'ALTER TABLE cases ADD COLUMN reference_number TEXT' },
+  { table: 'jobs', column: 'progress_done', ddl: 'ALTER TABLE jobs ADD COLUMN progress_done INTEGER NOT NULL DEFAULT 0' },
+  { table: 'jobs', column: 'progress_total', ddl: 'ALTER TABLE jobs ADD COLUMN progress_total INTEGER' },
+  { table: 'jobs', column: 'progress_total_is_estimate', ddl: 'ALTER TABLE jobs ADD COLUMN progress_total_is_estimate INTEGER NOT NULL DEFAULT 0' },
+  { table: 'jobs', column: 'heartbeat_at', ddl: 'ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT' },
 ]
 
 export function migrateSchema(db: Db): void {
-  for (const { column, ddl } of CASE_COLUMN_MIGRATIONS) {
-    if (!hasColumn(db, 'cases', column)) db.exec(ddl)
+  for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
+    if (!hasColumn(db, table, column)) db.exec(ddl)
   }
 }

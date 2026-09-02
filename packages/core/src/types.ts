@@ -79,12 +79,28 @@ export interface Failure {
  * and the `jobs.type` column deliberately carries no CHECK constraint so
  * that adding one here is the only change needed (see `schema.ts`).
  *
- *   discover      walk the acervo looking for ids not seen yet
- *   refresh_case  re-fetch a case's metadata and movements
- *   deep_case     fetch a case and every document in its file
- *   backfill      re-run an id range that an earlier pass missed
+ * The four the worker dispatches on, one per engine entry point:
+ *
+ *   crawl         enumerate an id range, or resume from the watermark
+ *   deep_case     fetch one case and every document in its file
+ *   deep_range    the same, over an id range
+ *   refresh_case  re-read a case that is already stored
+ *
+ * `discover` and `backfill` predate that split and are kept because rows
+ * carrying them may already be queued. Both are a `crawl` under a different
+ * name — `discover` is a crawl with no explicit range (it walks on from the
+ * watermark until the misses run out), `backfill` a crawl over one — and the
+ * worker runs them through the same handler rather than pretending they are
+ * distinct work. New enqueuers should say `crawl` and let the payload carry
+ * the difference, which is where it actually lives.
  */
-export type JobType = 'discover' | 'refresh_case' | 'deep_case' | 'backfill'
+export type JobType =
+  | 'crawl'
+  | 'deep_case'
+  | 'deep_range'
+  | 'refresh_case'
+  | 'discover'
+  | 'backfill'
 
 /**
  * A job's lifecycle. `pending -> running` on a claim; `running -> done` on
@@ -96,6 +112,22 @@ export type JobStatus = 'pending' | 'running' | 'done' | 'failed'
 
 /** Whatever the enqueuer needs the worker to know; stored as JSON. */
 export type JobPayload = Record<string, unknown>
+
+/**
+ * How far a running job has got, so a dashboard can say `217 / 300` rather
+ * than only "running".
+ *
+ * `total` is null when the run has no known end — a crawl resuming from the
+ * watermark stops after a streak of consecutive misses, and how many ids
+ * that takes is not knowable in advance. `totalIsEstimate` covers the case
+ * in between: a bound exists (an explicit `limit`) but the run may still
+ * stop short of it, so the denominator is a ceiling and not a promise.
+ */
+export interface JobProgress {
+  done: number
+  total: number | null
+  totalIsEstimate: boolean
+}
 
 export interface Job {
   id: number
@@ -110,4 +142,12 @@ export interface Job {
   finishedAt: string | null
   /** Why the last attempt failed; survives into the retry so it stays visible. */
   error: string | null
+  /** Counts for the *current* attempt; reset whenever the job re-enters the queue. */
+  progress: JobProgress
+  /**
+   * The last sign of life from the worker holding this job — the lease
+   * `reclaimStaleJobs` reads to tell a job still being worked on from one
+   * stranded by a worker that died. Null unless the job is running.
+   */
+  heartbeatAt: string | null
 }

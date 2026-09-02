@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 import {
   openDatabase, enqueueJob, claimNextJob, completeJob, failJob,
   getJob, listJobs, countJobsByStatus,
+  updateJobProgress, heartbeatJob, releaseJob, reclaimStaleJobs,
 } from '../src/index.ts'
 
 let dir: string
@@ -317,5 +318,203 @@ describe('concurrent claiming', () => {
     expect(countJobsByStatus(db)).toEqual({ pending: 0, running: 0, done: JOBS, failed: 0 })
     // One attempt each: a lost race must not show up as a silently re-run job.
     expect(listJobs(db).every((j) => j.attempts === 1)).toBe(true)
+  })
+})
+
+describe('job types the worker executes', () => {
+  it('accepts the engine-shaped types a worker dispatches on', () => {
+    for (const type of ['crawl', 'deep_range'] as const) {
+      expect(enqueueJob(db, type).type).toBe(type)
+    }
+    expect(listJobs(db).map((j) => j.type)).toEqual(['crawl', 'deep_range'])
+  })
+})
+
+describe('progress', () => {
+  it('starts at zero done with no total and no heartbeat', () => {
+    const job = enqueueJob(db, 'crawl')
+    expect(job.progress).toEqual({ done: 0, total: null, totalIsEstimate: false })
+    expect(job.heartbeatAt).toBeNull()
+  })
+
+  it('records how far a running job has got, against a known total', () => {
+    const id = enqueueJob(db, 'crawl', { fromId: 1, toId: 300 }).id
+    claimNextJob(db)
+    updateJobProgress(db, id, { done: 217, total: 300 })
+    expect(getJob(db, id)!.progress).toEqual({ done: 217, total: 300, totalIsEstimate: false })
+  })
+
+  it('can mark the total an estimate, for a run with no known end', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    updateJobProgress(db, id, { done: 4, total: 50, totalIsEstimate: true })
+    expect(getJob(db, id)!.progress).toEqual({ done: 4, total: 50, totalIsEstimate: true })
+  })
+
+  it('keeps the total when a later update reports only the count', () => {
+    const id = enqueueJob(db, 'deep_range', { fromId: 1, toId: 5 }).id
+    claimNextJob(db)
+    updateJobProgress(db, id, { done: 1, total: 5 })
+    updateJobProgress(db, id, { done: 2 })
+    expect(getJob(db, id)!.progress).toEqual({ done: 2, total: 5, totalIsEstimate: false })
+  })
+
+  it('is a sign of life: publishing progress refreshes the lease', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-1 hour') WHERE id = ?").run(id)
+    updateJobProgress(db, id, { done: 1 })
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(0)
+    expect(getJob(db, id)!.status).toBe('running')
+  })
+
+  it('ignores an update for a job that is no longer running', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    completeJob(db, id)
+    updateJobProgress(db, id, { done: 99 })
+    expect(getJob(db, id)!.progress.done).toBe(0)
+  })
+})
+
+describe('heartbeatJob', () => {
+  it('refreshes the lease and reports the job is still ours', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-1 hour') WHERE id = ?").run(id)
+    expect(heartbeatJob(db, id)).toBe(true)
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(0)
+  })
+
+  it('reports false once the job has been taken away or finished', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    completeJob(db, id)
+    expect(heartbeatJob(db, id)).toBe(false)
+    expect(heartbeatJob(db, 4242)).toBe(false)
+  })
+})
+
+describe('claimNextJob leases the job it hands out', () => {
+  it('stamps a heartbeat, so a fresh claim is never stale', () => {
+    enqueueJob(db, 'crawl')
+    const claimed = claimNextJob(db)!
+    expect(claimed.heartbeatAt).not.toBeNull()
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(0)
+  })
+})
+
+describe('releaseJob', () => {
+  it('returns an interrupted job to the queue without charging the attempt', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    updateJobProgress(db, id, { done: 12, total: 300 })
+    expect(releaseJob(db, id, 'interrupted')).toBe(true)
+    const job = getJob(db, id)!
+    expect(job.status).toBe('pending')
+    expect(job.attempts).toBe(0)
+    expect(job.startedAt).toBeNull()
+    expect(job.finishedAt).toBeNull()
+    expect(job.heartbeatAt).toBeNull()
+    expect(job.error).toBe('interrupted')
+    // The count belonged to the attempt that was cut short; leaving it would
+    // render a queued job as though it were already part-way through.
+    expect(job.progress).toEqual({ done: 0, total: 300, totalIsEstimate: false })
+  })
+
+  it('is claimable again straight away', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    releaseJob(db, id, 'interrupted')
+    expect(claimNextJob(db)!.id).toBe(id)
+  })
+
+  it('does nothing to a job that is not running', () => {
+    const id = enqueueJob(db, 'crawl').id
+    expect(releaseJob(db, id, 'interrupted')).toBe(false)
+    expect(getJob(db, id)!.status).toBe('pending')
+    expect(releaseJob(db, 4242, 'interrupted')).toBe(false)
+  })
+})
+
+describe('reclaimStaleJobs', () => {
+  const strand = (id: number, ago: string): void => {
+    db.prepare(`UPDATE jobs SET heartbeat_at = datetime('now', ?) WHERE id = ?`).run(ago, id)
+  }
+
+  it('leaves a job whose worker is still checking in alone', () => {
+    enqueueJob(db, 'crawl')
+    claimNextJob(db)
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(0)
+  })
+
+  it('returns a job whose worker stopped checking in to the queue', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    updateJobProgress(db, id, { done: 40, total: 300 })
+    strand(id, '-10 minutes')
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(1)
+    const job = getJob(db, id)!
+    expect(job.status).toBe('pending')
+    expect(job.startedAt).toBeNull()
+    expect(job.heartbeatAt).toBeNull()
+    expect(job.progress.done).toBe(0)
+    expect(job.error).toMatch(/lease/i)
+    // The attempt is still charged: nothing here proves the job is innocent
+    // of whatever killed the worker holding it.
+    expect(job.attempts).toBe(1)
+    expect(claimNextJob(db)!.id).toBe(id)
+  })
+
+  it('gives up on a job that has burned every attempt this way', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    strand(id, '-10 minutes')
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000, maxAttempts: 1 })).toBe(1)
+    const job = getJob(db, id)!
+    expect(job.status).toBe('failed')
+    expect(job.finishedAt).not.toBeNull()
+    expect(claimNextJob(db)).toBeNull()
+  })
+
+  it('rescues a job stranded by a worker too old to have left a heartbeat', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    db.prepare("UPDATE jobs SET heartbeat_at = NULL, started_at = datetime('now', '-10 minutes') WHERE id = ?").run(id)
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(1)
+    expect(getJob(db, id)!.status).toBe('pending')
+  })
+
+  it('never touches a pending, done or failed job', () => {
+    const pending = enqueueJob(db, 'crawl').id
+    const done = enqueueJob(db, 'crawl').id
+    claimNextJob(db, { types: ['crawl'] })
+    claimNextJob(db, { types: ['crawl'] })
+    completeJob(db, done)
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-10 minutes')").run()
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(1)
+    expect(getJob(db, pending)!.status).toBe('pending')
+    expect(getJob(db, done)!.status).toBe('done')
+  })
+})
+
+describe('finishing a job drops its lease', () => {
+  it('clears the heartbeat on completion and on terminal failure', () => {
+    const doneId = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    completeJob(db, doneId)
+    expect(getJob(db, doneId)!.heartbeatAt).toBeNull()
+
+    const failedId = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    failJob(db, failedId, 'boom', { maxAttempts: 1 })
+    expect(getJob(db, failedId)!.heartbeatAt).toBeNull()
+  })
+
+  it('clears the heartbeat when a failure sends the job back to the queue', () => {
+    const id = enqueueJob(db, 'crawl').id
+    claimNextJob(db)
+    failJob(db, id, 'transient', { maxAttempts: 3 })
+    expect(getJob(db, id)!.heartbeatAt).toBeNull()
   })
 })

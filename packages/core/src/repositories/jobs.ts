@@ -11,6 +11,17 @@ const DEFAULT_MAX_ATTEMPTS = 3
 
 const STATUSES: readonly JobStatus[] = ['pending', 'running', 'done', 'failed']
 
+/**
+ * How long a claimed job may go without a sign of life before
+ * `reclaimStaleJobs` treats the worker holding it as gone. Generous on
+ * purpose: reclaiming too eagerly costs two workers running the same job at
+ * once, while waiting costs one job sitting idle a little longer — so the
+ * default is many times the interval a worker actually heartbeats at (see
+ * `demo/worker`), leaving room for a machine that stalled, swapped, or spent
+ * a while in 429 backoff.
+ */
+export const DEFAULT_LEASE_MS = 60_000
+
 interface Row {
   id: number
   type: string
@@ -21,6 +32,10 @@ interface Row {
   started_at: string | null
   finished_at: string | null
   error: string | null
+  progress_done: number
+  progress_total: number | null
+  progress_total_is_estimate: number
+  heartbeat_at: string | null
 }
 
 const toJob = (r: Row): Job => ({
@@ -33,6 +48,13 @@ const toJob = (r: Row): Job => ({
   startedAt: r.started_at,
   finishedAt: r.finished_at,
   error: r.error,
+  progress: {
+    done: r.progress_done,
+    total: r.progress_total,
+    // SQLite has no boolean type; the column is the 0/1 integer it stores.
+    totalIsEstimate: r.progress_total_is_estimate !== 0,
+  },
+  heartbeatAt: r.heartbeat_at,
 })
 
 export function enqueueJob(db: Db, type: JobType, payload: JobPayload = {}): Job {
@@ -71,10 +93,13 @@ export function enqueueJob(db: Db, type: JobType, payload: JobPayload = {}): Job
  * Proven across real OS processes in `tests/jobs.test.ts` ("partitions the
  * queue across parallel worker processes").
  *
- * Note this deliberately does not reclaim jobs abandoned in `running` by a
- * worker that died — doing that safely needs a lease/heartbeat column, which
- * the agreed schema does not have. Until then a crashed worker's job stays
- * `running` and is visible as such in `countJobsByStatus`.
+ * The lease is stamped here, in this same statement, and so is the reset of
+ * `progress_done`: a job is never `running` without a `heartbeat_at`, which
+ * is what lets `reclaimStaleJobs` read the age of that column as the age of
+ * the claim with no special case for "claimed but not yet heartbeated", and
+ * a fresh attempt never inherits the count of the one before it. A follow-up
+ * `UPDATE` for either would open exactly the window this statement exists to
+ * avoid.
  */
 export function claimNextJob(db: Db, opts: { types?: readonly JobType[] } = {}): Job | null {
   const types = opts.types
@@ -89,7 +114,9 @@ export function claimNextJob(db: Db, opts: { types?: readonly JobType[] } = {}):
        SET status = 'running',
            attempts = attempts + 1,
            started_at = datetime('now'),
-           finished_at = NULL
+           finished_at = NULL,
+           heartbeat_at = datetime('now'),
+           progress_done = 0
      WHERE id = (
        SELECT id FROM jobs
         WHERE status = 'pending'${typeFilter}
@@ -113,7 +140,8 @@ export function claimNextJob(db: Db, opts: { types?: readonly JobType[] } = {}):
 export function completeJob(db: Db, id: number): void {
   db.prepare(`
     UPDATE jobs
-       SET status = 'done', finished_at = datetime('now'), error = NULL
+       SET status = 'done', finished_at = datetime('now'), error = NULL,
+           heartbeat_at = NULL
      WHERE id = ?
   `).run(id)
 }
@@ -131,7 +159,13 @@ export function completeJob(db: Db, id: number): void {
  * On a retry the timestamps of the abandoned attempt are cleared: the job is
  * genuinely not started, and leaving `started_at` set would make a queued
  * job indistinguishable from one in flight in any dashboard reading these
- * columns.
+ * columns. `progress_done` goes with them, for the same reason. A *terminal*
+ * failure keeps its count, which is the opposite call for the opposite
+ * reason: "failed after 217 of 300" is the single most useful thing that row
+ * can still say, and no further attempt is coming to overwrite it.
+ *
+ * The lease is dropped either way — neither a queued job nor a finished one
+ * is being held by anybody.
  *
  * An unknown id reports `'failed'`, the conservative answer — it is the one
  * that does not tell a caller "this will be retried" about a job that no
@@ -149,7 +183,9 @@ export function failJob(
        SET status      = CASE WHEN attempts < @maxAttempts THEN 'pending' ELSE 'failed' END,
            error       = @error,
            started_at  = CASE WHEN attempts < @maxAttempts THEN NULL ELSE started_at END,
-           finished_at = CASE WHEN attempts < @maxAttempts THEN NULL ELSE datetime('now') END
+           finished_at = CASE WHEN attempts < @maxAttempts THEN NULL ELSE datetime('now') END,
+           heartbeat_at  = NULL,
+           progress_done = CASE WHEN attempts < @maxAttempts THEN 0 ELSE progress_done END
      WHERE id = @id
     RETURNING status
   `).get({ id, error, maxAttempts }) as { status: string } | undefined
@@ -189,4 +225,150 @@ export function countJobsByStatus(db: Db): Record<JobStatus, number> {
     .all() as Array<{ status: JobStatus; n: number }>
   for (const r of rows) counts[r.status] = r.n
   return counts
+}
+
+/** A progress report. `total` omitted leaves whatever total is on file alone. */
+export interface JobProgressUpdate {
+  done: number
+  total?: number | null
+  totalIsEstimate?: boolean
+}
+
+/**
+ * Records how far the current attempt has got, so a dashboard can render
+ * `217 / 300` instead of only "running".
+ *
+ * Guarded on `status = 'running'`, which makes this the *only* way progress
+ * reaches the table and makes that path unable to do damage: a worker whose
+ * lease was reclaimed while it was mid-request writes nothing here rather
+ * than resurrecting a heartbeat on a job somebody else now owns, and a late
+ * report arriving after `completeJob` cannot un-finish a finished row.
+ *
+ * A report is also a sign of life, so it refreshes the lease in the same
+ * statement. A worker publishing progress is by definition not dead, and
+ * making it heartbeat separately would mean a worker that reports steadily
+ * could still have its job reclaimed out from under it.
+ *
+ * `total` is deliberately three-valued: omitted means "unchanged" (the
+ * common case — the denominator is known once, at the start, and only the
+ * count moves after that), while an explicit `null` means "this run has no
+ * known end", which is a thing a caller genuinely needs to be able to say.
+ * That is why the SET list is built rather than fixed; the values are still
+ * bound, never interpolated.
+ */
+export function updateJobProgress(db: Db, id: number, p: JobProgressUpdate): void {
+  const sets = ['progress_done = @done', "heartbeat_at = datetime('now')"]
+  if (p.total !== undefined) sets.push('progress_total = @total')
+  if (p.totalIsEstimate !== undefined) sets.push('progress_total_is_estimate = @estimate')
+  db.prepare(`
+    UPDATE jobs SET ${sets.join(', ')}
+     WHERE id = @id AND status = 'running'
+  `).run({
+    id,
+    done: p.done,
+    total: p.total ?? null,
+    estimate: p.totalIsEstimate === true ? 1 : 0,
+  })
+}
+
+/**
+ * Refreshes the lease on a job this worker believes it is holding, and
+ * reports whether it still is. `false` means the row is no longer a running
+ * job — reclaimed by `reclaimStaleJobs` after this worker went quiet for too
+ * long, or already finished — and a worker that sees it must stop treating
+ * the job as its own rather than later marking somebody else's work done.
+ */
+export function heartbeatJob(db: Db, id: number): boolean {
+  const result = db.prepare(`
+    UPDATE jobs SET heartbeat_at = datetime('now')
+     WHERE id = ? AND status = 'running'
+  `).run(id)
+  return result.changes > 0
+}
+
+/**
+ * Hands a running job back to the queue because the worker holding it is
+ * shutting down — the Ctrl-C path. Reports whether it actually released
+ * something, so a caller does not narrate an interruption it did not cause.
+ *
+ * The attempt is *given back* (`attempts - 1`), which is the one place this
+ * differs from `reclaimStaleJobs` below, and the difference is knowledge: a
+ * worker releasing its own job knows for certain that the job was cut short
+ * by the operator and not by anything wrong with the job, so charging it an
+ * attempt would let a few Ctrl-Cs walk an innocent job into `failed`.
+ * `MAX(0, ...)` keeps the column sane if this is ever called twice.
+ *
+ * `error` is set rather than cleared. Strictly it is not a failure, but it
+ * is the most recent thing that happened to this job, and "interrupted,
+ * requeued" is far more useful on a process screen than either silence or a
+ * stale message from an attempt two tries ago.
+ *
+ * Guarded on `status = 'running'` so a shutdown racing a job that just
+ * finished cannot drag a `done` row back into the queue.
+ */
+export function releaseJob(db: Db, id: number, error: string): boolean {
+  const result = db.prepare(`
+    UPDATE jobs
+       SET status = 'pending',
+           attempts = MAX(0, attempts - 1),
+           started_at = NULL,
+           finished_at = NULL,
+           heartbeat_at = NULL,
+           progress_done = 0,
+           error = @error
+     WHERE id = @id AND status = 'running'
+  `).run({ id, error })
+  return result.changes > 0
+}
+
+/** Why a reclaimed job is back in the queue — the text `reclaimStaleJobs` writes to `error`. */
+export const STALE_LEASE_ERROR =
+  'The worker holding this job stopped renewing its lease and is presumed dead; requeued.'
+
+/**
+ * Frees jobs stranded in `running` by a worker that died without releasing
+ * them — a SIGKILL, an OOM, a pulled power cable — and returns how many it
+ * freed. Nothing else can rescue those rows: `releaseJob` needs the worker
+ * to still be alive to call it, which is exactly what is not true here.
+ *
+ * "Died" is inferred from the lease: a running job whose `heartbeat_at` has
+ * not moved in `leaseMs` had a worker that stopped checking in. Falling back
+ * to `started_at` covers a row claimed before this column existed, which
+ * would otherwise be immortal for want of a heartbeat it never had a chance
+ * to write.
+ *
+ * The attempt is *not* given back, unlike `releaseJob`: nothing here proves
+ * the job is innocent of whatever killed the worker, and a job that reliably
+ * takes its worker down with it must be able to reach `failed` rather than
+ * loop forever. That is also why this applies the same attempt budget
+ * `failJob` does instead of always returning the row to `pending` — a
+ * reclaim that could never give up would be a way around the budget.
+ *
+ * One statement, for the reason spelled out at length on `claimNextJob`: a
+ * `SELECT` of the stale ids followed by an `UPDATE` of them leaves a window
+ * in which a second reclaimer, or the worker itself waking from a long
+ * stall, acts on the same rows.
+ */
+export function reclaimStaleJobs(
+  db: Db,
+  opts: { leaseMs?: number; maxAttempts?: number } = {},
+): number {
+  const leaseMs = opts.leaseMs ?? DEFAULT_LEASE_MS
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
+  // SQLite's modifier takes seconds; sub-second leases round down to 0,
+  // which reads as "anything not heartbeated this very instant", the
+  // sensible floor rather than an error.
+  const cutoff = `-${Math.floor(leaseMs / 1000)} seconds`
+  const result = db.prepare(`
+    UPDATE jobs
+       SET status      = CASE WHEN attempts < @maxAttempts THEN 'pending' ELSE 'failed' END,
+           started_at  = CASE WHEN attempts < @maxAttempts THEN NULL ELSE started_at END,
+           finished_at = CASE WHEN attempts < @maxAttempts THEN NULL ELSE datetime('now') END,
+           progress_done = CASE WHEN attempts < @maxAttempts THEN 0 ELSE progress_done END,
+           heartbeat_at = NULL,
+           error = @error
+     WHERE status = 'running'
+       AND COALESCE(heartbeat_at, started_at) <= datetime('now', @cutoff)
+  `).run({ maxAttempts, cutoff, error: STALE_LEASE_ERROR })
+  return result.changes
 }
