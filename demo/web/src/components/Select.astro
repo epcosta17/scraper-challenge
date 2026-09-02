@@ -1,0 +1,230 @@
+---
+import Icon from './Icon.astro'
+
+/**
+ * A dropdown that looks like the rest of the page.
+ *
+ * A native `<select>` was here first and had two problems, both visible: its
+ * open list is drawn by the operating system, so it arrives as a dark macOS
+ * popup in the middle of a light interface, and the chevron beside it did not
+ * open anything — the icon sits in the label, not in the control, so a click
+ * there landed on padding.
+ *
+ * So the value lives in a hidden input, which is what the form submits, and
+ * everything visible is ours. The whole control opens the list, chevron
+ * included, because the chevron is inside the button now.
+ *
+ * Rendered on the server rather than built in script: the options are known at
+ * render time, Astro's scoped styles reach markup that exists at build time
+ * (they do not reach anything `createElement` makes), and the current value is
+ * readable with JavaScript off.
+ */
+interface Option {
+  value: string
+  label: string
+  /** Shown after the label, dimmed — how many cases sit under it. */
+  count?: number
+}
+
+interface Props {
+  name: string
+  /** Shown when nothing is chosen, and the label of the empty option. */
+  placeholder: string
+  value: string
+  options: Option[]
+  /** Said when the list is empty, instead of an empty panel. */
+  emptyNote?: string
+}
+
+const { name, placeholder, value, options, emptyNote } = Astro.props
+const chosen = options.find((o) => o.value === value)
+---
+
+<div class="sel" data-sel>
+  <input type="hidden" name={name} value={value} data-sel-input />
+  <button
+    class="sel__btn"
+    type="button"
+    data-sel-btn
+    aria-haspopup="listbox"
+    aria-expanded="false"
+  >
+    <span class="sel__label" class:list={[chosen === undefined && 'sel__label--empty']} data-sel-label>
+      {chosen?.label ?? placeholder}
+    </span>
+    <Icon name="chevron-down" size={13} />
+  </button>
+
+  <ul class="sel__panel" role="listbox" hidden data-sel-panel>
+    <li>
+      <button class="sel__option" type="button" role="option" data-value="" aria-selected={value === '' ? 'true' : 'false'}>
+        {placeholder}
+      </button>
+    </li>
+    {
+      options.map((o) => (
+        <li>
+          <button
+            class="sel__option"
+            type="button"
+            role="option"
+            data-value={o.value}
+            aria-selected={o.value === value ? 'true' : 'false'}
+          >
+            <span>{o.label}</span>
+            {o.count !== undefined && <span class="sel__count">{o.count}</span>}
+          </button>
+        </li>
+      ))
+    }
+    {
+      options.length === 0 && emptyNote !== undefined && (
+        <li class="sel__empty">{emptyNote}</li>
+      )
+    }
+  </ul>
+</div>
+
+<style>
+  .sel { position: relative; }
+
+  .sel__btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 100%;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink-2);
+    text-align: left;
+    cursor: pointer;
+  }
+  .sel__btn:hover { border-color: var(--line-strong); color: var(--ink); }
+  .sel__btn[aria-expanded='true'] { border-color: var(--ink); color: var(--ink); }
+
+  .sel__label {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sel__label--empty { color: var(--ink-3); }
+
+  .sel__panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 40;
+    /* At least as wide as the control, and free to grow for a long class name
+       — these run to sixty characters and truncating them here would make two
+       classes look like the same one. */
+    min-width: 100%;
+    width: max-content;
+    max-width: min(560px, calc(100vw - 48px));
+    max-height: 340px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    border: 1px solid var(--line-strong);
+    background: var(--paper);
+    box-shadow: 0 6px 24px rgb(17 17 17 / 12%);
+  }
+
+  .sel__option {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 10px;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 300;
+    color: var(--ink-2);
+    text-align: left;
+    cursor: pointer;
+  }
+  .sel__option:hover,
+  .sel__option:focus-visible { background: var(--surface); color: var(--ink); outline: none; }
+  .sel__option[aria-selected='true'] { color: var(--ink); font-weight: 500; }
+  .sel__option > span:first-child { flex: 1 1 auto; }
+  .sel__count { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+
+  .sel__empty { padding: 8px 10px; font-size: 12px; color: var(--ink-3); }
+</style>
+
+<script>
+  /**
+   * Wires every dropdown on the page.
+   *
+   * One listener set per control, and the hidden input is the only state: what
+   * the button shows is derived from it, so nothing can drift between what is
+   * on screen and what the form will send.
+   */
+  for (const root of document.querySelectorAll<HTMLElement>('[data-sel]')) {
+    const input = root.querySelector<HTMLInputElement>('[data-sel-input]')!
+    const button = root.querySelector<HTMLButtonElement>('[data-sel-btn]')!
+    const label = root.querySelector<HTMLElement>('[data-sel-label]')!
+    const panel = root.querySelector<HTMLElement>('[data-sel-panel]')!
+    const options = Array.from(panel.querySelectorAll<HTMLButtonElement>('.sel__option'))
+
+    const close = (): void => {
+      panel.hidden = true
+      button.setAttribute('aria-expanded', 'false')
+    }
+    const open = (): void => {
+      panel.hidden = false
+      button.setAttribute('aria-expanded', 'true')
+      // Land on what is already chosen, so arrow keys start from there rather
+      // than from the top of a list of sixty classes.
+      const current = options.find((o) => o.dataset.value === input.value)
+      ;(current ?? options[0])?.focus()
+    }
+
+    button.addEventListener('click', (event) => {
+      // Stopped so the outside-click handler below does not see the same click
+      // and close what this just opened.
+      event.stopPropagation()
+      if (panel.hidden) open()
+      else close()
+    })
+
+    for (const option of options) {
+      option.addEventListener('click', (event) => {
+        event.stopPropagation()
+        input.value = option.dataset.value ?? ''
+        const text = option.querySelector('span')?.textContent ?? option.textContent ?? ''
+        label.textContent = text.trim()
+        label.classList.toggle('sel__label--empty', input.value === '')
+        for (const other of options) {
+          other.setAttribute('aria-selected', other === option ? 'true' : 'false')
+        }
+        close()
+        button.focus()
+      })
+    }
+
+    root.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !panel.hidden) {
+        event.stopPropagation()
+        close()
+        button.focus()
+        return
+      }
+      if (panel.hidden) return
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+      event.preventDefault()
+      const at = options.indexOf(document.activeElement as HTMLButtonElement)
+      const next = event.key === 'ArrowDown' ? at + 1 : at - 1
+      options[Math.max(0, Math.min(options.length - 1, next))]?.focus()
+    })
+
+    document.addEventListener('click', () => { if (!panel.hidden) close() })
+  }
+</script>

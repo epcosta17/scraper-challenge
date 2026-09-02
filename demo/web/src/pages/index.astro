@@ -1,6 +1,7 @@
 ---
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
+import Select from '../components/Select.astro'
 import CoverageCount from '../components/CoverageCount.astro'
 import { data } from '../data/index.ts'
 import type { CasePage, SearchResult } from '../data/types.ts'
@@ -179,38 +180,28 @@ const columns = [
       />
     </div>
 
-    <label class="toolbar__filter">
-      <span class="visually-hidden">Clase</span>
-      <select name="clase">
-        <option value="">Clase</option>
-        {classes.map((c) => (
-          <option value={c.name} selected={c.name === clase}>{c.name} ({formatInt(c.caseCount)})</option>
-        ))}
-      </select>
-      <Icon name="chevron-down" size={14} />
-    </label>
+    <Select
+      name="clase"
+      placeholder="Clase"
+      value={clase}
+      options={classes.map((c) => ({ value: c.name, label: c.name, count: c.caseCount }))}
+      emptyNote="Todavía no hay ninguna clase en el acervo."
+    />
 
-    <label class="toolbar__filter">
-      <span class="visually-hidden">Órgano</span>
-      <select name="organo">
-        <option value="">Órgano</option>
-        {organs.map((o) => (
-          <option value={o.name} selected={o.name === organo}>{o.name} ({formatInt(o.caseCount)})</option>
-        ))}
-      </select>
-      <Icon name="chevron-down" size={14} />
-    </label>
+    <Select
+      name="organo"
+      placeholder="Órgano"
+      value={organo}
+      options={organs.map((o) => ({ value: o.name, label: o.name, count: o.caseCount }))}
+      emptyNote="Todavía no hay ningún órgano en el acervo."
+    />
 
-    <label class="toolbar__filter">
-      <span class="visually-hidden">Periodo</span>
-      <select name="periodo">
-        <option value="">Periodo</option>
-        {PERIODS.map((p) => (
-          <option value={p.key} selected={p.key === periodo}>{p.label}</option>
-        ))}
-      </select>
-      <Icon name="chevron-down" size={14} />
-    </label>
+    <Select
+      name="periodo"
+      placeholder="Periodo"
+      value={periodo}
+      options={PERIODS.map((p) => ({ value: p.key, label: p.label }))}
+    />
 
     <button class="toolbar__go" type="submit">Buscar</button>
     {asked.length > 0 && <a class="toolbar__clear" href="/">Limpiar</a>}
@@ -418,22 +409,6 @@ const columns = [
   }
 
   /* The filters are real controls now: a <select> wearing the button's skin. */
-  .toolbar__filter { position: relative; cursor: pointer; }
-  .toolbar__filter select {
-    appearance: none;
-    width: 100%;
-    height: 100%;
-    padding: 0 26px 0 12px;
-    border: 0;
-    background: none;
-    font: inherit;
-    font-size: 13px;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  .toolbar__filter select:focus { outline: none; }
-  .toolbar__filter:hover select { color: var(--ink); }
-  .toolbar__filter svg { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 
   .toolbar__go {
     padding: 0 16px;
@@ -478,11 +453,14 @@ const columns = [
 
   .toolbar {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     gap: 12px;
     flex-wrap: wrap;
     padding-bottom: 20px;
   }
+  /* The three filters share what is left after the text box, which keeps a
+     long class name from stretching one of them across the row. */
+  .toolbar > :global(.sel) { flex: 0 1 190px; min-width: 130px; }
 
   .toolbar__search {
     display: flex;

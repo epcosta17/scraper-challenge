@@ -447,7 +447,18 @@ const movements = caseFile
       // Assigned rather than pushed as a new src attribute each time: the same
       // frame is reused, so opening a fortieth document costs no more than the
       // first.
-      frame.src = `/documentos/${id}`
+      //
+      // The fragment is for the browser's built-in PDF viewer, which is what
+      // renders inside this frame. `navpanes=0` folds away the thumbnail rail
+      // it opens by default — a column of unreadable page previews taking a
+      // fifth of the width — and `toolbar=0` drops its dark control bar, which
+      // is the one dark thing in a light interface and whose buttons this
+      // dialog already carries. `view=FitH` starts on the page width rather
+      // than at whatever zoom was left behind.
+      //
+      // A `#` in a URL is not sent to the server, so this costs no request and
+      // a browser that ignores these simply shows its default viewer.
+      frame.src = `/documentos/${id}#toolbar=0&navpanes=0&view=FitH`
       download.href = `/documentos/${id}?descargar`
       tab.href = `/documentos/${id}`
       prev.disabled = index === 0
