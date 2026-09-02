@@ -163,10 +163,26 @@ const chosen = options.find((o) => o.value === value)
   /**
    * Wires every dropdown on the page.
    *
-   * One listener set per control, and the hidden input is the only state: what
-   * the button shows is derived from it, so nothing can drift between what is
-   * on screen and what the form will send.
+   * The hidden input is the only state: what the button shows is derived from
+   * it, so nothing can drift between what is on screen and what the form will
+   * send.
+   *
+   * One document listener for all of them, not one each, and no
+   * `stopPropagation` anywhere. That combination is the whole trick: an
+   * earlier version stopped the button's click so it would not immediately
+   * close what it had just opened — and in doing so kept the click from ever
+   * reaching the other controls' handlers, so all three panels could stand
+   * open at once. Letting the click through and asking "does this control
+   * contain what was clicked?" answers both questions with one rule: the one
+   * you clicked stays, every other closes.
    */
+  interface Dropdown {
+    root: HTMLElement
+    close: () => void
+  }
+
+  const dropdowns: Dropdown[] = []
+
   for (const root of document.querySelectorAll<HTMLElement>('[data-sel]')) {
     const input = root.querySelector<HTMLInputElement>('[data-sel-input]')!
     const button = root.querySelector<HTMLButtonElement>('[data-sel-btn]')!
@@ -181,23 +197,19 @@ const chosen = options.find((o) => o.value === value)
     const open = (): void => {
       panel.hidden = false
       button.setAttribute('aria-expanded', 'true')
-      // Land on what is already chosen, so arrow keys start from there rather
-      // than from the top of a list of sixty classes.
+      // Land on what is already chosen, so the arrow keys start from there
+      // rather than from the top of a list of sixty classes.
       const current = options.find((o) => o.dataset.value === input.value)
       ;(current ?? options[0])?.focus()
     }
 
-    button.addEventListener('click', (event) => {
-      // Stopped so the outside-click handler below does not see the same click
-      // and close what this just opened.
-      event.stopPropagation()
+    button.addEventListener('click', () => {
       if (panel.hidden) open()
       else close()
     })
 
     for (const option of options) {
-      option.addEventListener('click', (event) => {
-        event.stopPropagation()
+      option.addEventListener('click', () => {
         input.value = option.dataset.value ?? ''
         const text = option.querySelector('span')?.textContent ?? option.textContent ?? ''
         label.textContent = text.trim()
@@ -225,6 +237,14 @@ const chosen = options.find((o) => o.value === value)
       options[Math.max(0, Math.min(options.length - 1, next))]?.focus()
     })
 
-    document.addEventListener('click', () => { if (!panel.hidden) close() })
+    dropdowns.push({ root, close })
+  }
+
+  if (dropdowns.length > 0) {
+    document.addEventListener('click', (event) => {
+      for (const d of dropdowns) {
+        if (!d.root.contains(event.target as Node)) d.close()
+      }
+    })
   }
 </script>
