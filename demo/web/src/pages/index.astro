@@ -217,9 +217,12 @@ const columns = [
   </form>
 
   <div class="table gutter">
-    <div class="table__head row-head" role="presentation">
-      {columns.map((c) => <span>{c}</span>)}
-    </div>
+    {/* The column head belongs to the listing; a hit has different columns. */}
+    {!searching && (
+      <div class="table__head row-head" role="presentation">
+        {columns.map((c) => <span>{c}</span>)}
+      </div>
+    )}
 
     {
       listed.map((c) => (
@@ -245,22 +248,31 @@ const columns = [
     }
     {
       hits.map((h) => (
-        <a class="case case--hit" href={`/expedientes/${h.number}`}>
-          <span class="case__number mono">{h.number}</span>
-          <span class="case__cell" data-label="Clase">{h.className}</span>
-          <span class="case__cell" data-label="Órgano">{h.organ ?? '—'}</span>
-          <span class="case__cell case__hitmeta" data-label="Coincide en">
+        <a class="hit" href={`/expedientes/${h.number}`}>
+          {/*
+            A hit is not a row of the listing wearing different words. The
+            listing's columns are counters — parties, documents, last movement
+            — and a hit has none of those; what it has is a reason and a piece
+            of the text it matched, and a snippet squeezed into a 90px counter
+            column is unreadable. So: the case on one line, the evidence under
+            it, across the full width.
+          */}
+          <span class="hit__number mono">{h.number}</span>
+          <span class="hit__class">{h.className}</span>
+          <span class="hit__organ">{h.organ ?? '—'}</span>
+          {h.snippet !== null && (
+            <p class="hit__snippet">
+              {h.snippet.segments.map((seg) =>
+                seg.hit ? <mark class="snippet__hit">{seg.text}</mark> : <span>{seg.text}</span>
+              )}
+            </p>
+          )}
+          <p class="hit__why">
             {h.matchedIn.length === 0
               ? 'cumple los filtros'
               : `coincide en ${h.matchedIn.map((m) => MATCHED_LABEL[m]).join(' · ')}`}
-            {h.snippet !== null && (
-              <span class="snippet">
-                {h.snippet.segments.map((seg) =>
-                  seg.hit ? <mark class="snippet__hit">{seg.text}</mark> : <span>{seg.text}</span>
-                )}
-              </span>
-            )}
-          </span>
+            {h.snippet !== null && <span class="hit__doc"> · {h.snippet.label}</span>}
+          </p>
         </a>
       ))
     }
@@ -362,6 +374,49 @@ const columns = [
 </Base>
 
 <style>
+  /* A search hit: the case on one line, why it matched underneath. */
+  .hit {
+    display: grid;
+    grid-template-columns: minmax(230px, 300px) minmax(150px, 260px) minmax(170px, 1fr);
+    align-items: baseline;
+    column-gap: 8px;
+    row-gap: 6px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-2);
+  }
+  .hit:hover { background: var(--surface); }
+  .hit__number { font-size: 13px; color: var(--ink); }
+  .hit__class { font-size: 14px; font-weight: 300; }
+  .hit__organ { font-size: 13px; font-weight: 300; color: var(--ink-3); }
+  /* Both span every column: the evidence gets the width of the row, which is
+     the whole reason this is not the listing's grid. */
+  .hit__snippet {
+    grid-column: 1 / -1;
+    margin: 2px 0 0;
+    font-size: 13px;
+    font-weight: 300;
+    line-height: 1.65;
+    color: var(--ink-2);
+  }
+  .hit__why {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .hit__doc { color: var(--ink-3); }
+  .snippet__hit {
+    background: none;
+    color: var(--ink);
+    font-weight: 500;
+    border-bottom: 1px solid var(--warn);
+  }
+
+  @media (max-width: 900px) {
+    .hit { grid-template-columns: 1fr; }
+  }
+
   /* The filters are real controls now: a <select> wearing the button's skin. */
   .toolbar__filter { position: relative; cursor: pointer; }
   .toolbar__filter select {
@@ -399,15 +454,6 @@ const columns = [
   .toolbar__clear:hover { color: var(--ink); }
 
   /* A hit row trades the capture counters for why it matched. */
-  .case__hitmeta {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    font-size: 12px;
-    color: var(--ink-3);
-  }
-  .snippet { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
-  .snippet__hit { background: none; color: var(--ink); font-weight: 500; }
 
   /* Nothing in the acervo — and the way out of it. */
   .nothing {
