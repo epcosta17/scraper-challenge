@@ -18,7 +18,8 @@
     "@pje/core": "*",
     "@pje/scraper": "*",
     "astro": "^7.2.10",
-    "better-sqlite3": "^11.7.0"
+    "better-sqlite3": "^11.7.0",
+    "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

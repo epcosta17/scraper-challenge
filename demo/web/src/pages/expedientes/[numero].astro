@@ -386,6 +386,10 @@ const movements = caseFile
             <span class="viewer__title" id="viewer-title" />
             <span class="viewer__count mono" id="viewer-count" />
             <span class="viewer__spacer" />
+            <span class="viewer__pages mono" id="viewer-page" />
+            <button class="viewer__btn" type="button" id="viewer-out" title="Alejar" aria-label="Alejar">−</button>
+            <button class="viewer__btn" type="button" id="viewer-in" title="Acercar" aria-label="Acercar">+</button>
+            <span class="viewer__sep" aria-hidden="true" />
             <button class="viewer__btn" type="button" id="viewer-prev" title="Documento anterior (←)" aria-label="Documento anterior">
               <Icon name="chevron-left" size={16} />
             </button>
@@ -402,7 +406,19 @@ const movements = caseFile
               <Icon name="x" size={16} />
             </button>
           </header>
-          <iframe class="viewer__frame" id="viewer-frame" title="Documento" />
+          <div class="viewer__body">
+            {/*
+              Where pdf.js draws. Not an <iframe> any more: the browser's
+              built-in viewer came with a dark bar and a rail of thumbnails
+              that no parameter could theme, and it drew something different
+              in every browser. Everything around the page is ours now — and,
+              more usefully, pdf.js lays the real characters over the canvas,
+              so the document can be selected, copied, and lit up on the term
+              that led the reader here.
+            */}
+            <div class="pdfv" id="viewer-pages" />
+            <iframe class="viewer__frame" id="viewer-frame" title="Documento" hidden />
+          </div>
         </dialog>
       </>
     )
@@ -410,6 +426,8 @@ const movements = caseFile
 </Base>
 
 <script>
+  import { createPdfViewer } from '../../lib/pdf-viewer.ts'
+
   /**
    * Two small jobs, both of which exist because the page would otherwise be
    * silent about something happening: reading a document without leaving the
@@ -421,14 +439,22 @@ const movements = caseFile
    */
   const dialog = document.getElementById('viewer') as HTMLDialogElement | null
   const frame = document.getElementById('viewer-frame') as HTMLIFrameElement | null
+  const pages = document.getElementById('viewer-pages')
 
-  if (dialog && frame) {
+  if (dialog && frame && pages) {
     const title = document.getElementById('viewer-title')!
     const count = document.getElementById('viewer-count')!
     const download = document.getElementById('viewer-download') as HTMLAnchorElement
     const tab = document.getElementById('viewer-tab') as HTMLAnchorElement
     const prev = document.getElementById('viewer-prev') as HTMLButtonElement
     const next = document.getElementById('viewer-next') as HTMLButtonElement
+    const pageLabel = document.getElementById('viewer-page')!
+    const zoomIn = document.getElementById('viewer-in') as HTMLButtonElement
+    const zoomOut = document.getElementById('viewer-out') as HTMLButtonElement
+
+    // Built on first use: pdf.js and its worker are the heaviest thing on the
+    // page, and a case file nobody opens should not pay for them.
+    let viewer: ReturnType<typeof createPdfViewer> | null = null
 
     // Every document on the page, in the order they are listed, so the arrows
     // walk the case file the way a reader would.
@@ -437,32 +463,55 @@ const movements = caseFile
     )
     let at = 0
 
-    const show = (index: number): void => {
+    /**
+     * The term that brought the reader here, if any.
+     *
+     * A search result links to the case with its query still on the URL, so a
+     * document opened from that page can light up the words that matched. It
+     * is the whole reason for rendering the PDF ourselves rather than framing
+     * it — a framed PDF has no text to mark.
+     */
+    const asked = new URLSearchParams(location.search).get('q') ?? ''
+
+    const show = async (index: number): Promise<void> => {
       const link = links[index]
       if (!link) return
       at = index
       const id = link.dataset.view
       title.textContent = link.dataset.label ?? ''
       count.textContent = `${index + 1} / ${links.length}`
-      // Assigned rather than pushed as a new src attribute each time: the same
-      // frame is reused, so opening a fortieth document costs no more than the
-      // first.
-      //
-      // The fragment is for the browser's built-in PDF viewer, which is what
-      // renders inside this frame. `navpanes=0` folds away the thumbnail rail
-      // it opens by default — a column of unreadable page previews taking a
-      // fifth of the width — and `toolbar=0` drops its dark control bar, which
-      // is the one dark thing in a light interface and whose buttons this
-      // dialog already carries. `view=FitH` starts on the page width rather
-      // than at whatever zoom was left behind.
-      //
-      // A `#` in a URL is not sent to the server, so this costs no request and
-      // a browser that ignores these simply shows its default viewer.
-      frame.src = `/documentos/${id}#toolbar=0&navpanes=0&view=FitH`
       download.href = `/documentos/${id}?descargar`
       tab.href = `/documentos/${id}`
       prev.disabled = index === 0
       next.disabled = index === links.length - 1
+
+      // An act with no PDF is still HTML, and pdf.js cannot read that. The
+      // frame stays for exactly that case, hidden the rest of the time.
+      const isPdf = link.dataset.format !== 'HTML'
+      frame.hidden = isPdf
+      pages.hidden = !isPdf
+      pageLabel.textContent = ''
+      zoomIn.disabled = !isPdf
+      zoomOut.disabled = !isPdf
+
+      if (!isPdf) {
+        viewer?.close()
+        frame.src = `/documentos/${id}`
+        return
+      }
+
+      frame.removeAttribute('src')
+      viewer ??= createPdfViewer(pages)
+      viewer.onPage((page, total) => { pageLabel.textContent = `${page} / ${total}` })
+      try {
+        await viewer.open(`/documentos/${id}`, asked)
+      } catch {
+        // A PDF that will not parse is not a reason to show a blank panel:
+        // fall back to the browser, which may still manage it.
+        pages.hidden = true
+        frame.hidden = false
+        frame.src = `/documentos/${id}`
+      }
     }
 
     for (const [index, link] of links.entries()) {
@@ -471,23 +520,28 @@ const movements = caseFile
         // eye is still a real link, and this only takes over the plain click.
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
         event.preventDefault()
-        show(index)
+        void show(index)
         dialog.showModal()
       })
     }
 
-    prev.addEventListener('click', () => show(at - 1))
-    next.addEventListener('click', () => show(at + 1))
+    prev.addEventListener('click', () => { void show(at - 1) })
+    next.addEventListener('click', () => { void show(at + 1) })
+    zoomIn.addEventListener('click', () => viewer?.zoomIn())
+    zoomOut.addEventListener('click', () => viewer?.zoomOut())
     document.getElementById('viewer-close')!.addEventListener('click', () => dialog.close())
 
     dialog.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowLeft') { event.preventDefault(); show(at - 1) }
-      if (event.key === 'ArrowRight') { event.preventDefault(); show(at + 1) }
+      if (event.key === 'ArrowLeft') { event.preventDefault(); void show(at - 1) }
+      if (event.key === 'ArrowRight') { event.preventDefault(); void show(at + 1) }
     })
 
     // Dropping the src on close stops a PDF rendering behind a closed dialog,
     // and means reopening always starts from the top of the document.
-    dialog.addEventListener('close', () => { frame.removeAttribute('src') })
+    dialog.addEventListener('close', () => {
+      frame.removeAttribute('src')
+      viewer?.close()
+    })
 
     // A click on the backdrop lands on the dialog itself, never on its content.
     dialog.addEventListener('click', (event) => {
@@ -556,6 +610,11 @@ const movements = caseFile
 </script>
 
 <style>
+  .viewer__body { height: calc(100% - 45px); }
+  .viewer__pages { font-size: 11px; color: var(--ink-3); min-width: 44px; text-align: right; }
+  .viewer__sep { width: 1px; height: 16px; background: var(--line); margin: 0 2px; }
+  .viewer__btn:disabled { opacity: .3; }
+
   /* The queued-capture banner: present only after a refresh was asked for. */
   .queued {
     display: flex;
@@ -859,4 +918,61 @@ const movements = caseFile
   }
 
   .empty { font-size: 13px; color: var(--ink-3); }
+</style>
+
+<style is:global>
+  /*
+    pdf.js builds every page, canvas and text span in the browser, so none of
+    them carry the attribute Astro scopes styles with — these have to be
+    global, and are kept under `.pdfv` so that global does not mean loose.
+  */
+  .pdfv {
+    height: 100%;
+    overflow: auto;
+    /* Ours, and light: the grey the built-in viewer paints around a page was
+       the one thing `#toolbar=0` could not reach. */
+    background: #f5f4f1;
+    padding: 16px 0 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .pdfv__page {
+    position: relative;
+    background: #fff;
+    box-shadow: 0 1px 4px rgb(17 17 17 / 12%);
+  }
+  .pdfv__page canvas { display: block; }
+
+  /*
+    The text layer sits exactly over the canvas, invisible. It is what makes
+    the document selectable and searchable — the characters are really there,
+    positioned by pdf.js, just not painted.
+  */
+  .pdfv__text {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    opacity: 1;
+    line-height: 1;
+    text-size-adjust: none;
+    forced-color-adjust: none;
+    transform-origin: 0 0;
+    caret-color: transparent;
+  }
+  .pdfv__text span {
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+    color: transparent;
+  }
+  .pdfv__text ::selection { background: rgb(138 106 31 / 30%); }
+
+  /* The search term, lit where it actually falls on the page. */
+  .pdfv__text span.is-hit {
+    background: rgb(138 106 31 / 26%);
+    border-radius: 1px;
+  }
 </style>

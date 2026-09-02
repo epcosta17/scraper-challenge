@@ -238,8 +238,14 @@ const columns = [
       ))
     }
     {
+      /*
+        The query travels with the link. Landing on a case from a search and
+        opening the document that matched, only to have to find the words
+        yourself, is the search stopping one step short — the viewer lights
+        them up when it knows what they were.
+      */
       hits.map((h) => (
-        <a class="hit" href={`/expedientes/${h.number}`}>
+        <a class="hit" href={`/expedientes/${h.number}${text === '' ? '' : `?q=${encodeURIComponent(text)}`}`}>
           {/*
             A hit is not a row of the listing wearing different words. The
             listing's columns are counters — parties, documents, last movement
