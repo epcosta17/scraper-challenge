@@ -49,9 +49,8 @@ export interface ClassifiedPdfOptions {
    * Request options for the fetch itself, so this same classifier can front
    * a form POST — the judicial act's own "Gerar PDF" download (see
    * `download.ts`) — and not just a plain GET. Replayed as-is on every
-   * retry, which is what the retry ladder above is worth having: a
-   * download POST is idempotent, so re-sending it costs nothing but the
-   * request.
+   * retry: a download POST asks for a file and changes nothing, so the
+   * retry ladder above is as safe here as it is on a GET.
    */
   init?: RequestInit
 }
