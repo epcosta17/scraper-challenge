@@ -319,6 +319,12 @@ export interface CaptureFailure {
   raw: string
   attempts: number
   lastAttemptAt: string
+  /** The row's own id, so a retry can name exactly this failure. */
+  id: number
+  /** The case whose re-capture would clear it, when there is one. */
+  caseNumber: string | null
+  /** False when nothing is recorded that could be re-run — say so, do not offer a dead button. */
+  retryable: boolean
 }
 
 export interface CaptureOverview {
@@ -330,6 +336,18 @@ export interface CaptureOverview {
   updatedAgoLabel: string
   jobs: Job[]
   failures: CaptureFailure[]
+}
+
+/** What came back from asking the queue to re-run some failures. */
+export interface RetryOutcome {
+  /** Failures that produced a job — new, or one already queued for that case. */
+  queued: number
+  /**
+   * Failures with nothing to re-run: no case was recorded beside them, which
+   * is true of every row written before the scraper started keeping it.
+   */
+  skipped: number
+  error: string | null
 }
 
 /** What came back from asking the queue to take a new job. */

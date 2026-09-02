@@ -49,6 +49,7 @@ import type {
   Conversation,
   Coverage,
   EnqueueOutcome,
+  RetryOutcome,
   Job,
   JobKind,
   JobState,
@@ -238,6 +239,62 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       return carrying
     },
 
+    async retryFailures(ids: readonly number[]): Promise<RetryOutcome> {
+      const conn = connect()
+      if (conn === null) {
+        return { queued: 0, skipped: 0, error: `No hay ninguna base en ${config.databasePath}.` }
+      }
+      if (ids.length === 0) return { queued: 0, skipped: 0, error: null }
+
+      const rows = listFailures(conn.db, { unresolvedOnly: true }).filter((f) => ids.includes(f.id))
+
+      // Two kinds of target, and the difference is whether we hold the case.
+      // A `parties` or `document` failure is about one we have, so re-reading
+      // it is what fixes it; a `summary_pdf` or `deep_case` names an id nobody
+      // captured, so it has to be fetched for the first time. Anything with
+      // neither is skipped and counted, never guessed at.
+      const refresh = new Set<number>()
+      const capture = new Set<number>()
+      let skipped = 0
+
+      for (const f of rows) {
+        if (f.idProcessoTrf !== null) { refresh.add(f.idProcessoTrf); continue }
+        const id = Number(f.ref)
+        if (REF_IS_A_CASE.has(f.kind) && Number.isInteger(id) && id > 0) {
+          // A parties or movements failure is about a case we hold, so it is a
+          // re-read; a summary_pdf or deep_case one names an id nobody
+          // captured, so it is a first fetch.
+          if (f.kind === 'parties' || f.kind === 'movements') refresh.add(id)
+          else capture.add(id)
+          continue
+        }
+        skipped++
+      }
+
+      // Not through `ensureCaptureJobs`: that one skips a case already in the
+      // acervo, which is exactly the case a retry is about. What it does share
+      // is the idempotence — a case already queued keeps the job it has, so
+      // pressing "reintentar todos" twice does not double the queue.
+      const open = new Map<number, string>()
+      for (const job of listJobs(conn.db)) {
+        if (job.status !== 'pending' && job.status !== 'running') continue
+        const target = (job.payload as { idProcessoTrf?: unknown }).idProcessoTrf
+        if (typeof target === 'number') open.set(target, job.type)
+      }
+
+      let queued = 0
+      for (const [ids, type] of [[refresh, 'refresh_case'], [capture, 'deep_case']] as const) {
+        for (const id of ids) {
+          if (open.has(id)) continue
+          enqueueJob(conn.db, type, { idProcessoTrf: id })
+          open.set(id, type)
+          queued++
+        }
+      }
+
+      return { queued, skipped, error: null }
+    },
+
     async getCase(number: string): Promise<CaseDetail | null> {
       const conn = connect()
       if (conn === null) return null
@@ -277,7 +334,7 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
           lastCaptureAt: captureLabel(row.lastScrapedAt),
           // Nothing counts a case's HTTP requests today — see the report.
           requestCount: null,
-          failures: failures.map(toCaptureFailure),
+          failures: failures.map((f) => toCaptureFailure(f, row.number)),
         },
       }
     },
@@ -414,6 +471,14 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       const jobs = listJobs(conn.db, { limit: JOB_WINDOW, offset: Math.max(0, total - JOB_WINDOW) })
       const today = countCapturedSince(conn.db, startOfTodayStored())
       const failures = listFailures(conn.db, { unresolvedOnly: true })
+      // The case numbers the open failures name, in one query rather than one
+      // per row: a hundred failures usually span a dozen cases.
+      const cited = [...new Set(failures.map((f) => f.idProcessoTrf).filter((n): n is number => n !== null))]
+      const numbersById = new Map<number, string>(
+        cited.length === 0 ? [] : (conn.db.prepare(
+          `SELECT id_processo_trf AS id, number FROM cases WHERE id_processo_trf IN (${cited.map(() => '?').join(', ')})`,
+        ).all(...cited) as Array<{ id: number; number: string }>).map((r) => [r.id, r.number]),
+      )
 
       return {
         runningJobs: counts.running,
@@ -423,7 +488,7 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
         openFailures: failures.length,
         updatedAgoLabel: agoLabel(getAcervoTotals(conn.db).lastScrapedAt),
         jobs: jobs.reverse().map(toJob),
-        failures: failures.map(toCaptureFailure),
+        failures: failures.map((f) => toCaptureFailure(f, numbersById.get(f.idProcessoTrf ?? -1) ?? null)),
       }
     },
 
@@ -678,7 +743,21 @@ const toJob = (j: StoredJob): Job => ({
   stage: j.stage,
 })
 
-const toCaptureFailure = (f: Failure): CaptureFailure => ({
+/** The failure kinds whose `ref` is itself a case's internal id. */
+const REF_IS_A_CASE = new Set(['parties', 'movements', 'summary_pdf', 'deep_case'])
+
+const toCaptureFailure = (f: Failure, caseNumber: string | null): CaptureFailure => ({
+  id: f.id,
+  caseNumber,
+  // A failure is re-runnable when it names something to re-run.
+  //
+  // Usually that is the case recorded beside it. But three kinds put the
+  // case's own id in `ref` — `parties` and `movements` are recorded against
+  // the case they are about, and `summary_pdf`/`deep_case` against the id
+  // that was being fetched — so they are actionable even on rows written
+  // before that column existed. Only a `document` failure is not: its ref is
+  // the document's id, and for an unrecognised link a synthetic hash.
+  retryable: f.idProcessoTrf !== null || REF_IS_A_CASE.has(f.kind),
   kind: f.kind,
   ref: f.ref,
   error: explainFailure(f.kind, f.error) ?? f.error,

@@ -8,6 +8,7 @@ import type {
   OrganOption,
   Conversation,
   EnqueueOutcome,
+  RetryOutcome,
   JobKind,
   SearchCriteria,
   SearchResult,
@@ -70,6 +71,18 @@ export interface WebDataSource {
    * a row can watch its own job.
    */
   ensureCaptureJobs(ids: readonly number[]): Promise<Map<number, number>>
+
+  /**
+   * Queues the capture that would clear a failure — one of them, or every one
+   * that can be targeted.
+   *
+   * Not every failure can. A `summary_pdf` names an id nobody has captured, so
+   * it re-runs as a fresh `deep_case`; a `parties` or `document` failure names
+   * a case we hold, so it re-runs as a `refresh_case`. A failure recorded
+   * before the case was stored alongside it names nothing actionable, and is
+   * reported as skipped rather than guessed at.
+   */
+  retryFailures(ids: readonly number[]): Promise<RetryOutcome>
 
   /**
    * The search form, answered against the acervo: free text across case

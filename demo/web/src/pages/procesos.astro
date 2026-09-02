@@ -34,6 +34,18 @@ if (Astro.request.method === 'POST') {
     return Astro.redirect(`/procesos?worker=${stopped ? 'parado' : 'ninguno'}`)
   }
 
+  // Retrying a failure is its own errand and, like run and stop, never looks
+  // at the queue form's fields.
+  if (form.has('reintentar')) {
+    const ids = form.getAll('reintentar').map(Number).filter(Number.isInteger)
+    const out = await data.retryFailures(ids)
+    const started = out.queued > 0 ? runner.ensureRunning() : { started: false }
+    return Astro.redirect(
+      `/procesos?reintentado=${out.queued}&omitidos=${out.skipped}` +
+      `${started.started ? '&worker=arrancado' : ''}#fallos`,
+    )
+  }
+
   const rawKind = String(form.get('tipo') ?? '')
   const target = String(form.get('objetivo') ?? '')
   if (!isJobKind(rawKind)) {
@@ -70,6 +82,19 @@ if (enqueued !== null) {
   flash = { kind: 'ok', text: `Trabajo #${enqueued} encolado.${said}` }
 } else if (failed !== null) {
   flash = { kind: 'bad', text: failed }
+} else if (params.has('reintentado')) {
+  const queued = Number(params.get('reintentado') ?? 0)
+  const skipped = Number(params.get('omitidos') ?? 0)
+  const said = queued === 0
+    ? 'No se encoló nada.'
+    : `${queued} ${queued === 1 ? 'captura encolada' : 'capturas encoladas'}.`
+  // Said out loud rather than rounded away: a failure with no case recorded
+  // beside it cannot be re-run, and pretending otherwise would leave somebody
+  // waiting for a job that was never created.
+  const missed = skipped === 0
+    ? ''
+    : ` ${skipped} sin objetivo que reejecutar: se registraron antes de que el scraper guardara a qué expediente pertenecen.`
+  flash = { kind: queued === 0 && skipped > 0 ? 'bad' : 'ok', text: said + missed }
 } else if (workerNote !== null) {
   flash = { kind: 'ok', text: WORKER_SAID[workerNote] ?? '' }
 }
@@ -309,6 +334,19 @@ function progressOf(j: Job): string | null {
       </section>
 
       <section class="panel__block" data-panel="fallos" hidden>
+        {
+          overview.failures.some((f) => f.retryable) && (
+            <form method="POST" class="retry-all">
+              {overview.failures.filter((f) => f.retryable).map((f) => (
+                <input type="hidden" name="reintentar" value={f.id} />
+              ))}
+              <button class="btn btn--ghost btn--block" type="submit">
+                <Icon name="rotate-ccw" size={14} />
+                Reintentar todos ({formatInt(overview.failures.filter((f) => f.retryable).length)})
+              </button>
+            </form>
+          )
+        }
 
         {
           overview.failures.length === 0 ? (
@@ -322,8 +360,33 @@ function progressOf(j: Job): string | null {
                     <span class="mono failure__ref">{f.ref}</span>
                   </span>
                   <span class="failure__error" title={f.raw}>{f.error}</span>
-                  <span class="failure__when mono">
-                    {formatInt(f.attempts)} {f.attempts === 1 ? 'intento' : 'intentos'} · {f.lastAttemptAt}
+                  <span class="failure__foot">
+                    <span class="failure__when mono">
+                      {formatInt(f.attempts)} {f.attempts === 1 ? 'intento' : 'intentos'} · {f.lastAttemptAt}
+                    </span>
+                    {
+                      f.retryable ? (
+                        <form method="POST" class="failure__retry">
+                          <input type="hidden" name="reintentar" value={f.id} />
+                          <button
+                            class="failure__btn"
+                            type="submit"
+                            title={f.caseNumber === null
+                              ? 'Captura este expediente por primera vez'
+                              : `Vuelve a leer ${f.caseNumber}`}
+                          >
+                            Reintentar
+                          </button>
+                        </form>
+                      ) : (
+                        /* No button rather than a dead one: this row was
+                           written before the scraper kept the case beside the
+                           failure, so there is nothing to re-run. */
+                        <span class="failure__none" title="No se registró a qué expediente pertenece">
+                          sin objetivo
+                        </span>
+                      )
+                    }
                   </span>
                 </li>
               ))}
@@ -457,6 +520,21 @@ function progressOf(j: Job): string | null {
 </script>
 
 <style>
+  .retry-all { margin-bottom: 4px; }
+  .failure__foot { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .failure__retry { margin: 0; }
+  .failure__btn {
+    padding: 3px 9px;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    font: inherit;
+    font-size: 11px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .failure__btn:hover { border-color: var(--ink); color: var(--ink); }
+  .failure__none { font-size: 11px; color: var(--ink-3); font-style: italic; }
+
   .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
   .tabs__tab {
     display: flex;
@@ -625,6 +703,13 @@ function progressOf(j: Job): string | null {
   @media (max-width: 1080px) { .panel { padding: 32px var(--gutter) 40px; } }
 
   .panel__block { display: flex; flex-direction: column; gap: 14px; }
+  /*
+    An author `display` beats the browser's own `[hidden] { display: none }`,
+    so the rule above made the hidden panel visible and both tabs showed at
+    once. Stated here rather than fought with `!important`: the panel is the
+    thing that has a display, so the panel is where its absence belongs.
+  */
+  .panel__block[hidden] { display: none; }
   .launch { display: flex; flex-direction: column; gap: 14px; }
   .field { display: flex; flex-direction: column; gap: 7px; }
   .hint--lg { font-size: 12px; line-height: 1.5; }
