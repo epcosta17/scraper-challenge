@@ -95,15 +95,16 @@ const ids = (q: string, opts?: Parameters<typeof searchCases>[2]): number[] =>
 
 describe('toFtsQuery', () => {
   it('quotes each term so portal punctuation cannot be read as FTS5 syntax', () => {
-    expect(toFtsQuery('sentença')).toBe('"sentença"')
-    expect(toFtsQuery('0013475-36.2026.4.05.0000')).toBe('"0013475-36.2026.4.05.0000"')
+    expect(toFtsQuery('sentença')).toBe('"sentença"*')
+    expect(toFtsQuery('0013475-36.2026.4.05.0000')).toBe('"0013475-36.2026.4.05.0000"*')
   })
 
   it('joins several terms with an implicit AND', () => {
-    expect(toFtsQuery('embargos execução')).toBe('"embargos" "execução"')
+    expect(toFtsQuery('embargos execução')).toBe('"embargos"* "execução"*')
   })
 
   it('keeps an explicit phrase as one phrase', () => {
+    // Quoted stays exact: that is how you say you meant it literally.
     expect(toFtsQuery('"execução fiscal"')).toBe('"execução fiscal"')
   })
 
@@ -112,17 +113,17 @@ describe('toFtsQuery', () => {
   })
 
   it('passes the uppercase boolean operators through', () => {
-    expect(toFtsQuery('sentença OR despacho')).toBe('"sentença" OR "despacho"')
+    expect(toFtsQuery('sentença OR despacho')).toBe('"sentença"* OR "despacho"*')
   })
 
   it('escapes an embedded double quote instead of ending the term early', () => {
-    expect(toFtsQuery('a"b')).toBe('"a""b"')
+    expect(toFtsQuery('a"b')).toBe('"a""b"*')
   })
 
   it('drops a dangling operator that would otherwise be a syntax error', () => {
-    expect(toFtsQuery('sentença OR')).toBe('"sentença"')
-    expect(toFtsQuery('AND sentença')).toBe('"sentença"')
-    expect(toFtsQuery('sentença OR AND despacho')).toBe('"sentença" AND "despacho"')
+    expect(toFtsQuery('sentença OR')).toBe('"sentença"*')
+    expect(toFtsQuery('AND sentença')).toBe('"sentença"*')
+    expect(toFtsQuery('sentença OR AND despacho')).toBe('"sentença"* AND "despacho"*')
   })
 
   it('rejects a query with nothing searchable in it', () => {

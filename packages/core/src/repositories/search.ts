@@ -79,6 +79,13 @@ const quote = (s: string): string => `"${s.replaceAll('"', '""')}"`
  * and unambiguous: an explicit `"phrase"`, a trailing `*` for a prefix
  * search, and the uppercase operators AND/OR/NOT. Terms with no operator
  * between them are ANDed, which is FTS5's own default.
+ *
+ * A bare word is a **prefix** whether or not it was written with a `*`.
+ * Somebody who types "baix" into a search box means Baixa Definitiva, and
+ * answering "nothing found" because the token was `baixa` is the box being
+ * pedantic about a syntax nobody was told about — one letter short of a word
+ * is the most ordinary thing a person does. Explicit `"quotes"` remain exact,
+ * which is how you say you meant it literally.
  */
 export function toFtsQuery(raw: string): string {
   const parts: string[] = []
@@ -93,14 +100,15 @@ export function toFtsQuery(raw: string): string {
     }
     const word = m[2]!
     if (OPERATORS.has(word)) { parts.push(word); continue }
-    const isPrefix = word.endsWith('*')
-    const bare = isPrefix ? word.slice(0, -1) : word
+    const bare = word.endsWith('*') ? word.slice(0, -1) : word
     // A term of pure punctuation produces no tokens at all; passing it on
     // would make FTS5 match everything or nothing depending on position.
     if (!hasToken(bare)) continue
-    parts.push(quote(bare) + (isPrefix ? '*' : ''))
+    // `"phrase"*` is FTS5's own prefix syntax and applies to the phrase's
+    // last token, so a case number stays an ordered phrase with only its
+    // final group left open — which costs nothing.
+    parts.push(`${quote(bare)}*`)
   }
-
   const normalised = dropDanglingOperators(parts)
   if (normalised.length === 0) {
     throw new SearchQueryError(

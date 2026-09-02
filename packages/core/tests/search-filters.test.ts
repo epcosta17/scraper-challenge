@@ -201,7 +201,7 @@ describe('searchAcervo — criteria combined', () => {
     const result = searchAcervo(db, { text: 'prescricao', filters: { party: 'apoliano' } })
     expect(result.hits[0]?.matchedIn).toContain('document')
     expect(result.hits[0]?.snippet?.text).toContain('prescrição')
-    expect(result.ftsQuery).toBe('"prescricao"')
+    expect(result.ftsQuery).toBe('"prescricao"*')
   })
 
   it('reports no match through the text index when only filters ran', () => {
