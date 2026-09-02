@@ -211,10 +211,28 @@ function progressOf(j: Job): string | null {
     </div>
 
     <aside class="split__aside panel">
-      <section class="panel__block">
-        <header class="section-head">
-          <h2 class="section-head__title">ENCOLAR PROCESO</h2>
-        </header>
+      {/*
+        Two panels, one at a time, because they are two halves of the same
+        errand: you queue work here, and when it goes wrong the reason is
+        where you already are. Side by side they made the aside twice as long
+        as the screen and pushed the form out of reach.
+
+        The count rides on the tab, so a failure that appeared while you were
+        looking at the form is visible without opening it.
+      */}
+      <div class="tabs" role="tablist">
+        <button class="tabs__tab" type="button" role="tab" data-tab="encolar" aria-selected="true">
+          Encolar proceso
+        </button>
+        <button class="tabs__tab" type="button" role="tab" data-tab="fallos" aria-selected="false">
+          Fallos sin resolver
+          {overview.openFailures > 0 && (
+            <span class="tabs__count mono">{formatInt(overview.openFailures)}</span>
+          )}
+        </button>
+      </div>
+
+      <section class="panel__block" data-panel="encolar">
 
         {
           flash !== null && (
@@ -290,11 +308,7 @@ function progressOf(j: Job): string | null {
         </form>
       </section>
 
-      <section class="panel__block">
-        <header class="section-head">
-          <h2 class="section-head__title">FALLOS SIN RESOLVER</h2>
-          <p class="section-head__aside mono num failures__count">{formatInt(overview.openFailures)}</p>
-        </header>
+      <section class="panel__block" data-panel="fallos" hidden>
 
         {
           overview.failures.length === 0 ? (
@@ -327,6 +341,27 @@ function progressOf(j: Job): string | null {
 </Base>
 
 <script>
+  /**
+   * The aside's two tabs.
+   *
+   * Server-rendered and toggled here rather than routed: both panels are
+   * already on the page, switching costs no request, and the queue below keeps
+   * polling either way.
+   */
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-tab]'))
+  const panels = Array.from(document.querySelectorAll<HTMLElement>('[data-panel]'))
+
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => {
+      for (const other of tabs) {
+        other.setAttribute('aria-selected', other === tab ? 'true' : 'false')
+      }
+      for (const panel of panels) {
+        panel.hidden = panel.dataset.panel !== tab.dataset.tab
+      }
+    })
+  }
+
   /**
    * Keeps the queue table honest while a worker is working.
    *
@@ -422,6 +457,44 @@ function progressOf(j: Job): string | null {
 </script>
 
 <style>
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
+  .tabs__tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 2px;
+    margin-right: 22px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    font: inherit;
+    font-size: 12px;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    cursor: pointer;
+  }
+  .tabs__tab:hover { color: var(--ink-2); }
+  .tabs__tab[aria-selected='true'] { color: var(--ink); border-bottom-color: var(--ink); }
+  /* The count rides on the tab so a failure raised while you were filling in
+     the form is visible without opening the other panel. */
+  .tabs__count { font-size: 11px; color: var(--bad); }
+
+  /*
+    A failure's message can be a whole `onclick` blob off the portal — a
+    malformed document reference is recorded verbatim, which is right, and
+    unreadable at full length. Three lines here; the whole of it is in the
+    title, where it can be read without deciding the width of the panel.
+  */
+  .failure__error {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+
   /*
     Both lists grow without bound — the queue holds every job ever run, and
     the failures list every one still open (125 of them here). Rendered whole,

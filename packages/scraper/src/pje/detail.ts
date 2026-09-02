@@ -116,7 +116,19 @@ function parseLabel(rawText: string): { label: string; date: string | null; type
 // as optional, rather than requiring it, is what tells the two apart: see
 // `parseDetailPage` below, which drops a trigger with no `idProcessoDoc`
 // rather than turning it into a document.
-const HTML_TRIGGER_RE = /documentoSemLoginHTML\.seam\?ca=([0-9a-f]{112})(?:&idProcessoDoc=(\d+))?/
+//
+// Two token lengths, both real. The trigger this parser was written against
+// carries 112 hex; a document opened through an `openPopUp(...)` wrapper
+// carries 96, and pinning the length at 112 meant those were filed as
+// unrecognised links and never fetched at all — 51 of them in a live acervo.
+// Same endpoint, same parameters, same document behind it.
+//
+// An alternation rather than a range, for the same reason the search row's
+// `ca` is one: these are the two shapes the portal is known to emit, and a
+// token of some third length should still surface as a malformed ref rather
+// than be quietly swallowed by a loose pattern.
+const HTML_TRIGGER_RE =
+  /documentoSemLoginHTML\.seam\?ca=((?:[0-9a-f]{112}|[0-9a-f]{96}))(?![0-9a-f])(?:&(?:amp;)?idProcessoDoc=(\d+))?/
 
 /**
  * Parses a case detail page into its document list. Cheerio decodes HTML

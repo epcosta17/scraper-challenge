@@ -123,6 +123,25 @@ describe('parseDetailPage', () => {
     expect(docs.filter((d) => d.kind === 'html')).toHaveLength(1)
   })
 
+  it('reads a document behind an openPopUp wrapper, and its shorter ca', () => {
+    // Measured on a live acervo: 51 documents were recorded as unrecognised
+    // links and never fetched. Two things were different from the trigger
+    // this parser knew, and neither changed the endpoint — the wrapper is
+    // `openPopUp(...)` rather than a bare submit, and the token is 96 hex
+    // where the other shape carries 112.
+    const wrapped = detailWithDocs.replace(
+      /onclick="[^"]*documentoSemLoginHTML\.seam[^"]*"/,
+      `onclick="openPopUp('5484popUpDocumento', ` +
+      `'https://pjett.trf5.jus.br/pjeconsulta/ConsultaPublica/DetalheProcessoConsultaPublica/` +
+      `documentoSemLoginHTML.seam?ca=${'0b'.repeat(48)}&amp;idProcessoDoc=5484');return false;"`,
+    )
+    const docs = parseDetailPage(wrapped)
+    expect(docs.filter((d) => d.kind === 'malformed')).toHaveLength(0)
+    const html = docs.filter((d) => d.kind === 'html')
+    expect(html).toHaveLength(1)
+    expect(html[0]).toMatchObject({ kind: 'html', idProcessoDoc: 5484, ca: '0b'.repeat(48) })
+  })
+
   it('turns an HTML trigger with an unrecognised ca shape into a malformed ref too', () => {
     const broken = detailWithDocs.replace(/documentoSemLoginHTML\.seam\?ca=[0-9a-f]{112}/, 'documentoSemLoginHTML.seam?ca=not-hex-at-all')
     const docs = parseDetailPage(broken)
