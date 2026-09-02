@@ -219,8 +219,8 @@ const columns = [
       listed.map((c) => (
         <a class="case" href={`/expedientes/${c.number}`}>
           <span class="case__number mono">{c.number}</span>
-          <span class="case__cell" data-label="Clase">{c.className}</span>
-          <span class="case__cell" data-label="Órgano">{c.organ ?? '—'}</span>
+          <span class="case__cell" data-label="Clase" title={c.className}>{c.className}</span>
+          <span class="case__cell" data-label="Órgano" title={c.organ ?? undefined}>{c.organ ?? '—'}</span>
           <span class="case__cell case__count" data-label="Partes">
             <CoverageCount value={c.parties} noun="partes" />
           </span>
@@ -502,11 +502,29 @@ const columns = [
     color: var(--ink-2);
   }
 
-  .table { display: flex; flex-direction: column; }
+  /*
+    A page of rows always occupies the same height, so the pager below sits
+    still instead of walking up and down as you move through the acervo.
+    Without this, a page whose class names happen to wrap — "PEDIDO DE
+    UNIFORMIZAÇÃO DE INTERPRETAÇÃO DE LEI CÍVEL" is three lines — is taller
+    than the next one, and the control you are clicking moves out from under
+    the pointer between clicks.
+
+    Two halves: every row is the same height (below), and the list reserves a
+    full page of them even when the last page is short.
+  */
+  .table {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(var(--row-h) * 6);
+  }
+  /* One row: 16px padding either side of two lines at 14px/1.45. */
+  .table { --row-h: 73px; }
 
   .table__head,
   .case {
     display: grid;
+    box-sizing: border-box;
     grid-template-columns:
       minmax(230px, 300px) minmax(150px, 210px) minmax(170px, 240px)
       90px 70px minmax(200px, 1fr);
@@ -515,6 +533,9 @@ const columns = [
   }
 
   .case {
+    /* Fixed, not minimum: a row that grows is a row that moves everything
+       under it, and the pager is under all of them. */
+    height: var(--row-h);
     padding: 16px 0;
     border-bottom: 1px solid var(--line);
     color: var(--ink-2);
@@ -524,6 +545,20 @@ const columns = [
   .case:hover { background: var(--surface); }
   .case__number { font-size: 13px; color: var(--ink); }
   .case__cell { min-width: 0; overflow-wrap: anywhere; }
+  /*
+    Two lines, then an ellipsis. A judicial class runs to sixty characters and
+    would otherwise decide the height of its row on its own; the full name is
+    on the case itself, and in the title here.
+  */
+  .case__cell[data-label='Clase'],
+  .case__cell[data-label='Órgano'],
+  .case__cell[data-label='Último movimiento'] {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
   .case__count { font-size: 13px; }
 
   .table__empty {

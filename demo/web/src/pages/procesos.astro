@@ -170,7 +170,7 @@ function progressOf(j: Job): string | null {
             <div class="job row-head" role="presentation">
               {columns.map((c) => <span>{c}</span>)}
             </div>
-            <ul data-queue>
+            <ul class="queue" data-queue>
               {overview.jobs.map((j) => (
                 <li class="job job--row" data-job={j.id}>
                   <span class="job__kind mono">{j.kind}</span>
@@ -422,6 +422,25 @@ function progressOf(j: Job): string | null {
 </script>
 
 <style>
+  /*
+    Both lists grow without bound — the queue holds every job ever run, and
+    the failures list every one still open (125 of them here). Rendered whole,
+    they push the rest of the screen off the bottom and there is no way back
+    to the form that fills them.
+
+    Scrolled inside themselves instead, at a height that shows enough to be
+    worth reading and keeps what surrounds them reachable. `overscroll-behavior`
+    stops the page scrolling on after the list reaches its end, which is the
+    thing that makes a nested scroller feel broken.
+  */
+  .queue,
+  .failures {
+    max-height: 60vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .failures { max-height: 46vh; }
+
   .job__stage {
     display: block;
     margin-top: 2px;
