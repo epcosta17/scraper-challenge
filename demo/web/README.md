@@ -55,7 +55,7 @@ cases in it.
 | `/expedientes/:numero/resumen.pdf` | the portal's summary PDF for the case |
 | `/chat` | `03 Chat` — the same index, asked in prose |
 | `/procesos` | `04 Procesos` — the queue, and the only place that writes |
-| `/busqueda` | `05 Búsqueda` — full text over the acervo |
+| `/busqueda` | `05 Búsqueda` — the portal's eight criteria, plus full text, over the acervo |
 | `/documentos/:id` | one stored document, inline or `?descargar` |
 
 `/procesos` is not in the design's nav, which carries only Expedientes,
@@ -77,7 +77,7 @@ No page opens a database and no storage row shape reaches a template. Every
 method is `async` so a synchronous better-sqlite3 implementation and a remote
 one are both drop-ins, and none of them throws for a missing acervo.
 
-## Three things that are not decoration
+## Four things that are not decoration
 
 **Completeness.** `Coverage` (`{ captured, declared }`) is the type behind every
 count the portal also declares a total for. The declared totals are not columns:
@@ -92,6 +92,19 @@ list is never presented as a complete one.
 query*, so no parameter and no page number gets past it. That is still true, and
 it is exactly why `/busqueda` searches the captured acervo instead: the crawl is
 what buys coverage the public form cannot give. The banner says so in words.
+
+**A control that cannot filter is not drawn.** `/busqueda` carries the eight
+criteria of the portal's own form — number, distribution date range, class,
+party, lawyer, CPF/CNPJ, OAB, reference — because every one of them is a column
+the acervo stores, and `searchAcervo` in `@pje/core` answers them in the same
+statement as the text query, so the ranking and the total describe the same
+rows. Where the acervo and the portal differ, the screen says so instead of
+pretending: the date field is labelled *distribución*, which is the date a case
+file prints, not the *autuación* the portal filters on; the class control offers
+the classes the acervo holds, with their counts, not the CNJ's 132; and the OAB
+state offers the UFs actually captured. The portal's two-name minimum on party
+and lawyer is not enforced, because it is a rule of its server and not of this
+index.
 
 **No invented progress.** `jobs` records what a job is and what has happened to
 it — attempts, when the current attempt started, when it ended, why it failed —
