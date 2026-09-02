@@ -1,0 +1,469 @@
+---
+import Base from '../../layouts/Base.astro'
+import Icon from '../../components/Icon.astro'
+import CoverageNotice from '../../components/CoverageNotice.astro'
+import { data } from '../../data/index.ts'
+import { isPartial } from '../../data/types.ts'
+import { formatBytes, formatInt, plural } from '../../lib/format.ts'
+
+const { numero } = Astro.params
+const caseFile = numero ? await data.getCase(numero) : null
+
+if (caseFile === null) {
+  Astro.response.status = 404
+}
+
+const showAllMovements = Astro.url.searchParams.get('movimientos') === 'todos'
+const MOVEMENT_PREVIEW = 5
+
+const capture = caseFile?.capture
+const partial =
+  capture !== undefined &&
+  (isPartial(capture.documents) || isPartial(capture.movements) || isPartial(capture.parties))
+
+const meta = caseFile && [
+  ['ÓRGANO JUZGADOR', caseFile.organ ?? '—'],
+  ['DISTRIBUCIÓN', caseFile.distributedAt ?? '—'],
+  ['JURISDICCIÓN', caseFile.jurisdiction ?? '—'],
+  ['PROCESO DE REFERENCIA', caseFile.referenceNumber ?? '—'],
+  ['ÚLTIMA CAPTURA', caseFile.capture.lastCaptureAt ?? '—'],
+]
+
+const poloLabel = { ativo: 'ACTIVO', passivo: 'PASIVO' } as const
+
+const movements = caseFile
+  ? showAllMovements
+    ? caseFile.movements
+    : caseFile.movements.slice(0, MOVEMENT_PREVIEW)
+  : []
+---
+
+<Base
+  title={caseFile?.number ?? 'Expediente no encontrado'}
+  current="expedientes"
+  description={caseFile ? `${caseFile.className} · ${caseFile.organ ?? ''}` : undefined}
+>
+  {
+    caseFile === null ? (
+      <section class="missing gutter">
+        <p class="eyebrow">404</p>
+        <h1 class="page-title page-title--md">Ese expediente no está en el acervo</h1>
+        <p class="lede">
+          <span class="mono">{numero}</span> no figura entre los expedientes capturados. Puedes
+          buscarlo en el portal y encolar su captura.
+        </p>
+        <p class="missing__actions">
+          <a class="btn" href="/busqueda">Buscar en el portal</a>
+          <a class="btn btn--ghost" href="/">Volver al acervo</a>
+        </p>
+      </section>
+    ) : (
+      <>
+        <section class="case-head gutter">
+          <nav class="crumbs" aria-label="Ruta">
+            <a href="/">Expedientes</a>
+            <span aria-hidden="true">/</span>
+            <span class="mono">{caseFile.number}</span>
+          </nav>
+
+          <div class="case-head__row">
+            <div>
+              <h1 class="case-head__number">{caseFile.number}</h1>
+              <p class="case-head__tags">
+                <span>{caseFile.className}</span>
+                {caseFile.classCode && <><span class="sep">·</span><span class="mono">{caseFile.classCode}</span></>}
+                <span class="sep">·</span>
+                <span>{caseFile.jurisdiction ?? 'TRF5'}{caseFile.panel ? ` · ${caseFile.panel}` : ''}</span>
+              </p>
+            </div>
+
+            <div class="case-head__actions">
+              <button class="btn" type="button" disabled>
+                <Icon name="refresh-cw" size={15} />
+                Refrescar expediente
+              </button>
+              <button class="btn btn--ghost" type="button" disabled>
+                <Icon name="download" size={15} />
+                Descargar todo
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="meta gutter" aria-label="Datos del proceso">
+          {
+            (meta ?? []).map(([k, v]) => (
+              <div class="meta__cell">
+                <span class="field-label">{k}</span>
+                <span class="meta__value">{v}</span>
+              </div>
+            ))
+          }
+        </section>
+
+        <div class="split" style="--aside: 520px">
+          <div class="split__main body-main">
+            <section class="block">
+              <header class="section-head">
+                <h2 class="section-head__title">02 — PARTES</h2>
+                <p class="section-head__aside">
+                  {
+                    isPartial(caseFile.capture.parties)
+                      ? `${formatInt(caseFile.capture.parties.captured)} de ${formatInt(caseFile.capture.parties.declared ?? 0)} participantes`
+                      : plural(caseFile.capture.parties.captured, 'participante', 'participantes')
+                  }
+                </p>
+              </header>
+
+              <CoverageNotice
+                value={caseFile.capture.parties}
+                noun="partes"
+                cause="El Datascroller de la ficha solo pinta las diez primeras y no expone las siguientes."
+              />
+
+              <ul class="parties">
+                {
+                  caseFile.parties.map((p) => (
+                    <li class="party">
+                      <span class="party__polo">{poloLabel[p.polo]}</span>
+                      <div class="party__info">
+                        <p class="party__name">{p.name}</p>
+                        <p class="party__docs">
+                          {p.documentNumber && (
+                            <span class="mono">
+                              {p.documentType === 'cnpj' ? 'CNPJ' : 'CPF'} {p.documentNumber}
+                            </span>
+                          )}
+                          {p.oab && <span class="mono">OAB {p.oab}</span>}
+                        </p>
+                      </div>
+                      <span class="party__role">{p.role ?? '—'}</span>
+                    </li>
+                  ))
+                }
+              </ul>
+            </section>
+
+            <section class="block">
+              <header class="section-head">
+                <h2 class="section-head__title">03 — MOVIMIENTOS</h2>
+                <p class="section-head__aside">
+                  {
+                    isPartial(caseFile.capture.movements)
+                      ? `${formatInt(caseFile.capture.movements.captured)} de ${formatInt(caseFile.capture.movements.declared ?? 0)} registros`
+                      : plural(caseFile.capture.movements.captured, 'registro', 'registros')
+                  }
+                </p>
+              </header>
+
+              <CoverageNotice
+                value={caseFile.capture.movements}
+                noun="movimientos"
+                cause="La tabla de movimentações se cortó antes de terminar de paginar."
+              />
+
+              <ol class="movements">
+                {
+                  movements.map((m) => (
+                    <li class="movement">
+                      <span class="movement__ts mono">{m.timestamp ?? '—'}</span>
+                      <span class="movement__text">{m.description}</span>
+                    </li>
+                  ))
+                }
+              </ol>
+
+              {
+                caseFile.movements.length > MOVEMENT_PREVIEW && (
+                  <p class="more">
+                    {showAllMovements ? (
+                      <a href={`/expedientes/${caseFile.number}`}>← Ver solo los últimos {MOVEMENT_PREVIEW}</a>
+                    ) : (
+                      <a href={`/expedientes/${caseFile.number}?movimientos=todos`}>
+                        Ver los {formatInt(caseFile.movements.length)} movimientos →
+                      </a>
+                    )}
+                  </p>
+                )
+              }
+            </section>
+          </div>
+
+          <aside class="split__aside side">
+            <section class="capture">
+              <header class="capture__head">
+                <h2 class="field-label">ESTADO DE CAPTURA</h2>
+                <span class:list={['status-pill', partial && 'status-pill--warn']}>
+                  <span class:list={['dot', partial ? 'dot--warn' : 'dot--ok']}></span>
+                  {partial ? 'Incompleto' : 'Completo'}
+                </span>
+              </header>
+
+              {
+                (
+                  [
+                    ['Documentos', caseFile.capture.documents],
+                    ['Movimientos', caseFile.capture.movements],
+                    ['Partes', caseFile.capture.parties],
+                  ] as const
+                ).map(([label, cov]) => (
+                  <p class="capture__row">
+                    <span class="capture__key">{label}</span>
+                    <span class:list={['mono', 'num', isPartial(cov) && 'partial']}>
+                      {formatInt(cov.captured)} de {formatInt(cov.declared ?? cov.captured)}
+                    </span>
+                  </p>
+                ))
+              }
+
+              <p class="capture__row">
+                <span class="capture__key">Última captura</span>
+                <span class="mono capture__muted">
+                  {caseFile.capture.lastCaptureAt ?? '—'}
+                  {caseFile.capture.requestCount !== null &&
+                    ` · ${formatInt(caseFile.capture.requestCount)} peticiones`}
+                </span>
+              </p>
+
+              {
+                partial && (
+                  <p class="capture__foot">
+                    Las cifras de la izquierda son lo que el portal declara; las de la derecha, lo
+                    que se pudo leer. Mientras no coincidan, el expediente está incompleto.
+                  </p>
+                )
+              }
+            </section>
+
+            <section class="block">
+              <header class="section-head">
+                <h2 class="section-head__title">04 — DOCUMENTOS</h2>
+                <p class="section-head__aside">
+                  {plural(caseFile.documents.length, 'archivo', 'archivos')}
+                  {caseFile.documentsBytes !== null && ` · ${formatBytes(caseFile.documentsBytes)}`}
+                </p>
+              </header>
+
+              <CoverageNotice
+                value={caseFile.capture.documents}
+                noun="documentos"
+                cause="La descarga se detuvo en un 429 del portal y quedó pendiente de reintento."
+              />
+
+              {
+                caseFile.documents.length === 0 ? (
+                  <p class="empty">El expediente todavía no tiene documentos en el portal.</p>
+                ) : (
+                  <ul class="docs">
+                    {caseFile.documents.map((d) => (
+                      <li class="doc">
+                        <Icon name={d.format === 'HTML' ? 'file-code' : 'file-text'} size={15} />
+                        <span class="doc__date mono">{d.docDate ?? '—'}</span>
+                        <span class="doc__label">{d.label}</span>
+                        <span class="doc__fmt mono">{d.format}</span>
+                        <Icon name="eye" size={15} />
+                      </li>
+                    ))}
+                  </ul>
+                )
+              }
+            </section>
+          </aside>
+        </div>
+      </>
+    )
+  }
+</Base>
+
+<style>
+  .missing {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding-block: 80px 120px;
+  }
+  .missing__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+  .case-head {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-top: 44px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--line);
+  }
+  .crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+  .crumbs a:hover { color: var(--ink-2); }
+  .crumbs .mono { color: var(--ink-2); }
+
+  .case-head__row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+  .case-head__number {
+    font-size: clamp(1.75rem, 3vw, 2.625rem);
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    overflow-wrap: anywhere;
+  }
+  .case-head__tags {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    font-size: 15px;
+    font-weight: 300;
+    color: var(--ink-2);
+  }
+  .case-head__tags .mono { font-size: 13px; color: var(--ink-3); }
+  .case-head__tags .sep { color: var(--ink-3); }
+  .case-head__actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .case-head__actions .btn:disabled { opacity: 1; cursor: default; }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px 0;
+    padding-block: 24px;
+    border-bottom: 1px solid var(--line);
+  }
+  .meta__cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1 1 190px;
+    padding-right: 24px;
+  }
+  .meta__value { font-size: 14px; font-weight: 300; line-height: 1.4; color: var(--ink); }
+
+  .body-main {
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+    padding: 36px var(--gutter) 40px var(--gutter);
+  }
+  .split__main.body-main { padding-right: 40px; }
+
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 36px var(--gutter) 40px 40px;
+    background: var(--surface);
+  }
+
+  @media (max-width: 1080px) {
+    .split__main.body-main { padding-right: var(--gutter); }
+    .side { padding-left: var(--gutter); }
+  }
+
+  .block { display: flex; flex-direction: column; gap: 16px; }
+
+  .parties, .movements, .docs { display: flex; flex-direction: column; }
+
+  .party {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr) 110px;
+    gap: 20px;
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .party:last-child { margin-bottom: 0; }
+  .party__polo { font-size: 10px; font-weight: 500; letter-spacing: 1px; color: var(--ink-2); }
+  .party__name { font-size: 15px; line-height: 1.35; color: var(--ink); overflow-wrap: anywhere; }
+  .party__docs {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 5px;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .party__role { font-size: 12px; color: var(--ink-2); }
+
+  @media (max-width: 720px) {
+    .party { grid-template-columns: 1fr; gap: 6px; }
+    .party__role { order: 3; }
+  }
+
+  .movement {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr);
+    gap: 24px;
+    padding-bottom: 13px;
+    margin-bottom: 13px;
+    border-bottom: 1px solid var(--line);
+  }
+  .movement__ts { font-size: 12px; color: var(--ink-3); }
+  .movement__text { font-size: 14px; font-weight: 300; line-height: 1.4; color: var(--ink); }
+
+  @media (max-width: 560px) {
+    .movement { grid-template-columns: 1fr; gap: 4px; }
+  }
+
+  .more { font-size: 13px; color: var(--ink-2); }
+  .more a { border-bottom: 1px solid var(--line-strong); }
+
+  .capture {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .capture__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .capture__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+  .capture__key { font-size: 13px; font-weight: 300; color: var(--ink-2); }
+  .capture__row .mono { font-size: 12px; color: var(--ink); }
+  .capture__muted { color: var(--ink-2) !important; }
+  .capture__foot {
+    padding-top: 4px;
+    font-size: 12px;
+    font-weight: 300;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  .status-pill--warn { color: var(--warn); }
+  .dot--warn { background: var(--warn); }
+
+  .doc {
+    display: grid;
+    grid-template-columns: auto 82px minmax(0, 1fr) 38px auto;
+    align-items: center;
+    gap: 14px;
+    padding-block: 13px;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-3);
+  }
+  .doc__date { font-size: 12px; }
+  .doc__label { font-size: 14px; font-weight: 300; color: var(--ink); overflow-wrap: anywhere; }
+  .doc__fmt { font-size: 11px; }
+
+  @media (max-width: 520px) {
+    .doc {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      column-gap: 10px;
+      row-gap: 2px;
+    }
+    .doc :global(> *:nth-child(1)) { grid-row: 1 / 3; }
+    .doc__date { grid-column: 2; grid-row: 1; }
+    .doc__fmt { grid-column: 2; grid-row: 1; justify-self: end; }
+    .doc__label { grid-column: 2; grid-row: 2; }
+    .doc :global(> *:nth-child(5)) { grid-column: 3; grid-row: 1 / 3; }
+  }
+
+  .empty { font-size: 13px; color: var(--ink-3); }
+</style>

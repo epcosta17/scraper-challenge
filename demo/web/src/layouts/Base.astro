@@ -1,0 +1,37 @@
+---
+import Nav from '../components/Nav.astro'
+import '../styles/app.css'
+
+interface Props {
+  title: string
+  description?: string
+  current?: 'expedientes' | 'busqueda' | 'chat' | null
+}
+
+const { title, description, current = null } = Astro.props
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} · TRF5 Consulta Procesal</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap"
+    />
+  </head>
+  <body>
+    <div class="page">
+      <Nav current={current} />
+      <main>
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>

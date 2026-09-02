@@ -1,0 +1,32 @@
+---
+import type { Coverage } from '../data/types.ts'
+import { isPartial } from '../data/types.ts'
+import { formatInt } from '../lib/format.ts'
+
+interface Props {
+  value: Coverage
+  /** What is being counted, for the explanation shown on a partial count. */
+  noun: string
+  /** Dim a legitimate zero instead of colouring it as a gap. */
+  dimZero?: boolean
+}
+
+const { value, noun, dimZero = false } = Astro.props
+const partial = isPartial(value)
+const title = partial
+  ? `El portal declara ${formatInt(value.declared ?? 0)} ${noun}; se leyeron ${formatInt(value.captured)}.`
+  : undefined
+---
+
+{
+  partial ? (
+    <span class="mono num partial" title={title}>
+      {formatInt(value.captured)} / {formatInt(value.declared ?? 0)}
+      <span class="visually-hidden"> — captura incompleta</span>
+    </span>
+  ) : (
+    <span class="mono num" style={dimZero && value.captured === 0 ? 'color:var(--ink-3)' : undefined}>
+      {formatInt(value.captured)}
+    </span>
+  )
+}

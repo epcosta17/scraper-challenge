@@ -1,0 +1,243 @@
+---
+import Base from '../layouts/Base.astro'
+import Icon from '../components/Icon.astro'
+import { data } from '../data/index.ts'
+import type { Job } from '../data/types.ts'
+import { formatInt, formatRate } from '../lib/format.ts'
+
+const overview = await data.captureOverview()
+
+const STATE_LABEL: Record<Job['state'], string> = {
+  running: 'corriendo',
+  queued: 'en cola',
+  done: 'completado',
+  failed: 'fallido',
+}
+
+const progress = (j: Job): string => {
+  if (j.done === null) return '—'
+  if (j.total === null) return formatInt(j.done)
+  return `${formatInt(j.done)} / ${j.totalIsEstimate ? '~' : ''}${formatInt(j.total)}`
+}
+
+/** The estimate the panel prints under the launch button. */
+const SAMPLE_BATCH = 300
+const roundedRate = Math.max(1, Math.round(overview.requestsPerSecond))
+const sampleMinutes = Math.floor(
+  (SAMPLE_BATCH * overview.requestsPerCase) / roundedRate / 60
+)
+
+const kpis = [
+  { value: formatInt(overview.runningJobs), label: 'procesos en curso', tone: '' },
+  { value: formatInt(overview.casesToday), label: 'casos hoy', tone: '' },
+  { value: formatInt(overview.documentsToday), label: 'documentos hoy', tone: '' },
+  { value: formatInt(overview.openFailures), label: 'fallos sin resolver', tone: 'bad' },
+  { value: formatRate(overview.requestsPerSecond), label: 'ritmo actual', tone: 'muted' },
+]
+
+const modes = ['crawl', 'deep', 'daily'] as const
+const activeMode = 'deep'
+---
+
+<Base
+  title="Procesos"
+  description="Estado de la captura: cola de trabajos, ritmo y fallos sin resolver."
+>
+  <section class="head gutter">
+    <p class="eyebrow">06 — PROCESOS</p>
+    <h1 class="page-title page-title--sm">Captura</h1>
+  </section>
+
+  <section class="kpis gutter" aria-label="Indicadores de captura">
+    {
+      kpis.map((k) => (
+        <div class="kpi">
+          <p class="kpi__value num" data-tone={k.tone}>{k.value}</p>
+          <p class="kpi__label">{k.label}</p>
+        </div>
+      ))
+    }
+  </section>
+
+  <div class="split" style="--aside: 520px">
+    <div class="split__main queue">
+      <header class="section-head">
+        <h2 class="section-head__title">COLA DE TRABAJOS</h2>
+        <p class="section-head__aside">actualizado {overview.updatedAgoLabel}</p>
+      </header>
+
+      <ul>
+        {
+          overview.jobs.map((j) => (
+            <li class="job">
+              <span class="job__kind mono">{j.kind}</span>
+              <span class="job__target">{j.target}</span>
+              <span class="job__progress mono num">{progress(j)}</span>
+              <span class="job__state" data-state={j.state}>
+                <span class:list={['dot', j.state === 'running' && 'dot--ok', j.state === 'failed' && 'dot--bad']} />
+                {STATE_LABEL[j.state]}
+              </span>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+
+    <aside class="split__aside panel">
+      <section class="panel__block">
+        <header class="section-head">
+          <h2 class="section-head__title">LANZAR PROCESO</h2>
+        </header>
+
+        <div class="segmented" role="group" aria-label="Tipo de proceso">
+          {
+            modes.map((m) => (
+              <button class="segmented__option" type="button" disabled aria-pressed={m === activeMode}>
+                {m}
+              </button>
+            ))
+          }
+        </div>
+
+        <div class="field">
+          <span class="field-label" id="lbl-objetivo">OBJETIVO</span>
+          <input
+            class="input input--mono"
+            disabled
+            aria-labelledby="lbl-objetivo"
+            placeholder="ids 130100–130400  ·  o un nº de expediente"
+          />
+        </div>
+
+        <div class="field">
+          <span class="field-label" id="lbl-ritmo">CONCURRENCIA · RITMO</span>
+          <input
+            class="input input--mono"
+            disabled
+            aria-labelledby="lbl-ritmo"
+            placeholder={`4 workers  ·  ${roundedRate} req/s`}
+          />
+        </div>
+
+        <button class="btn btn--block" type="button" disabled>
+          <Icon name="play" size={14} />
+          Encolar proceso
+        </button>
+
+        <p class="hint hint--lg">
+          ≈ {formatInt(overview.requestsPerCase)} peticiones por caso. {formatInt(SAMPLE_BATCH)} casos
+          ≈ {formatInt(sampleMinutes)} min a {roundedRate} req/s.
+        </p>
+      </section>
+
+      <section class="panel__block">
+        <header class="section-head">
+          <h2 class="section-head__title">FALLOS SIN RESOLVER</h2>
+          <p class="section-head__aside mono num failures__count">{formatInt(overview.openFailures)}</p>
+        </header>
+
+        <ul>
+          {
+            overview.failures.map((f) => (
+              <li class="failure">
+                <span class="failure__top">
+                  <span class="mono failure__kind">{f.kind}</span>
+                  <span class="mono failure__ref">{f.ref}</span>
+                </span>
+                <span class="failure__error">{f.error}</span>
+              </li>
+            ))
+          }
+        </ul>
+
+        <button class="btn btn--ghost btn--block" type="button" disabled>
+          <Icon name="rotate-ccw" size={14} />
+          Reintentar los {formatInt(overview.openFailures)}
+        </button>
+      </section>
+    </aside>
+  </div>
+</Base>
+
+<style>
+  .head {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding-top: 48px;
+    padding-bottom: 28px;
+  }
+
+  .kpis { display: flex; flex-wrap: wrap; gap: 20px 0; padding-bottom: 32px; }
+  .kpi { flex: 1 1 150px; padding-right: 24px; }
+  .kpi__value {
+    font-size: clamp(1.4rem, 2.2vw, 1.875rem);
+    font-weight: 300;
+    letter-spacing: -0.6px;
+  }
+  .kpi__value[data-tone='bad'] { color: var(--bad); }
+  .kpi__value[data-tone='muted'] { color: var(--ink-2); }
+  .kpi__label { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+
+  .queue {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 0 40px 40px var(--gutter);
+  }
+  @media (max-width: 1080px) { .queue { padding-right: var(--gutter); } }
+
+  .job {
+    display: grid;
+    grid-template-columns: 86px minmax(0, 1fr) 96px 114px;
+    align-items: center;
+    gap: 16px;
+    padding-block: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .job__kind { font-size: 12px; color: var(--ink); }
+  .job__target { font-size: 14px; font-weight: 300; color: var(--ink-2); overflow-wrap: anywhere; }
+  .job__progress { font-size: 12px; color: var(--ink-2); }
+  .job__state {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .job__state[data-state='failed'] { color: var(--bad); }
+
+  @media (max-width: 720px) {
+    .job { grid-template-columns: 86px minmax(0, 1fr); gap: 6px 16px; }
+    .job__progress { grid-column: 1; justify-self: start; }
+    .job__state { grid-column: 2; justify-content: flex-start; }
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    padding: 0 var(--gutter) 40px 36px;
+    background: var(--surface);
+  }
+  @media (max-width: 1080px) { .panel { padding: 32px var(--gutter) 40px; } }
+
+  .panel__block { display: flex; flex-direction: column; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 7px; }
+  .hint--lg { font-size: 12px; line-height: 1.5; }
+  .failures__count { color: var(--bad); }
+
+  .failure {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .failure__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .failure__kind { font-size: 11px; color: var(--ink-2); }
+  .failure__ref { font-size: 11px; color: var(--ink-3); }
+  .failure__error { font-size: 12px; font-weight: 300; line-height: 1.45; color: var(--ink-2); }
+</style>

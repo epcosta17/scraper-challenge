@@ -1,0 +1,306 @@
+---
+import Base from '../layouts/Base.astro'
+import Icon from '../components/Icon.astro'
+import CoverageCount from '../components/CoverageCount.astro'
+import { data } from '../data/index.ts'
+import { dateOnly, formatCompact, formatInt, formatPercent } from '../lib/format.ts'
+
+const PAGE_SIZE = 6
+
+const requested = Number.parseInt(Astro.url.searchParams.get('p') ?? '1', 10)
+const [page, stats] = await Promise.all([
+  data.listCases(Number.isFinite(requested) ? requested : 1, PAGE_SIZE),
+  data.archiveStats(),
+])
+
+const first = page.items.length === 0 ? 0 : (page.page - 1) * page.pageSize + 1
+const last = first === 0 ? 0 : first + page.items.length - 1
+
+/** 1 2 3 … 22.237, with the ellipsis where the run is broken. */
+const pageLinks: (number | null)[] = (() => {
+  const out: (number | null)[] = [1, 2, 3]
+  if (page.pageCount > 4) out.push(null)
+  if (page.pageCount > 3) out.push(page.pageCount)
+  const uniq = out.filter((n, i) => n === null || out.indexOf(n) === i)
+  return uniq.filter((n) => n === null || n <= page.pageCount)
+})()
+
+const href = (n: number) => (n === 1 ? '/' : `/?p=${n}`)
+
+const filters = ['Clase', 'Órgano', 'Periodo']
+const columns = [
+  'Nº EXPEDIENTE',
+  'CLASE',
+  'ÓRGANO JUZGADOR',
+  'PARTES',
+  'DOCS',
+  'ÚLTIMO MOVIMIENTO',
+]
+---
+
+<Base
+  title="Expedientes"
+  description="El acervo del TRF5 indexado: procesos, partes, movimentações y documentos."
+  current="expedientes"
+>
+  <section class="head gutter">
+    <p class="eyebrow">01 — ACERVO</p>
+    <h1 class="page-title">Expedientes</h1>
+    <p class="lede">
+      {formatInt(stats.caseCount)} procesos del Tribunal Regional Federal da 5ª Região, con sus
+      partes, movimentações y documentos.
+    </p>
+  </section>
+
+  <div class="toolbar gutter">
+    <div class="toolbar__search">
+      <Icon name="search" size={16} />
+      <input
+        class="toolbar__input"
+        type="search"
+        disabled
+        placeholder="Buscar por número, parte, CPF/CNPJ o texto del documento"
+        aria-label="Buscar en el acervo (disponible al conectar la base)"
+      />
+    </div>
+    {
+      filters.map((f) => (
+        <button class="toolbar__filter" type="button" disabled>
+          <span>{f}</span>
+          <Icon name="chevron-down" size={14} />
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="table gutter">
+    <div class="table__head row-head" role="presentation">
+      {columns.map((c) => <span>{c}</span>)}
+    </div>
+
+    {
+      page.items.map((c) => (
+        <a class="case" href={`/expedientes/${c.number}`}>
+          <span class="case__number mono">{c.number}</span>
+          <span class="case__cell" data-label="Clase">{c.className}</span>
+          <span class="case__cell" data-label="Órgano">{c.organ ?? '—'}</span>
+          <span class="case__cell case__count" data-label="Partes">
+            <CoverageCount value={c.parties} noun="partes" />
+          </span>
+          <span class="case__cell case__count" data-label="Docs">
+            <CoverageCount value={c.documents} noun="documentos" dimZero />
+          </span>
+          <span class="case__cell case__mov" data-label="Último movimiento">
+            {
+              c.lastMovement === null
+                ? '—'
+                : `${dateOnly(c.lastMovement.timestamp)} · ${c.lastMovement.description}`
+            }
+          </span>
+        </a>
+      ))
+    }
+
+    {
+      page.items.length === 0 && (
+        <p class="table__empty">
+          Esta maqueta trae solo la primera página del acervo como datos de ejemplo.{' '}
+          <a class="table__empty-link" href="/">Volver a la página 1</a>.
+        </p>
+      )
+    }
+  </div>
+
+  <nav class="pager gutter" aria-label="Paginación del acervo">
+    <p class="pager__range">
+      {
+        page.items.length === 0
+          ? `Página ${formatInt(page.page)} de ${formatInt(page.pageCount)}`
+          : `Mostrando ${formatInt(first)}–${formatInt(last)} de ${formatInt(page.total)}`
+      }
+    </p>
+    <div class="pager__controls">
+      <a
+        class="pager__btn"
+        href={href(Math.max(1, page.page - 1))}
+        aria-disabled={page.page === 1 ? 'true' : undefined}>Anterior</a
+      >
+      {
+        pageLinks.map((n) =>
+          n === null ? (
+            <span class="pager__btn pager__btn--gap" aria-hidden="true">…</span>
+          ) : (
+            <a
+              class="pager__btn"
+              href={href(n)}
+              aria-current={n === page.page ? 'page' : undefined}
+            >
+              {formatInt(n)}
+            </a>
+          )
+        )
+      }
+      <a
+        class="pager__btn"
+        href={href(Math.min(page.pageCount, page.page + 1))}
+        aria-disabled={page.page === page.pageCount ? 'true' : undefined}>Siguiente</a
+      >
+    </div>
+  </nav>
+
+  <section class="stat-row gutter coverage" aria-label="Cobertura del acervo">
+    <div class="stat">
+      <p class="stat__value num">{formatInt(stats.caseCount)}</p>
+      <p class="stat__label">expedientes indexados</p>
+    </div>
+    <div class="stat">
+      <p class="stat__value num">{formatCompact(stats.documentCount)}</p>
+      <p class="stat__label">documentos descargados</p>
+    </div>
+    <div class="stat">
+      <p class="stat__value num">{formatPercent(stats.coveragePct)}</p>
+      <p class="stat__label">cobertura del acervo</p>
+    </div>
+    <div class="stat">
+      <p class="stat__value">{stats.lastSyncLabel}</p>
+      <p class="stat__label">última sincronización</p>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .head {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding-top: 56px;
+    padding-bottom: 32px;
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-bottom: 20px;
+  }
+
+  .toolbar__search {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 320px;
+    min-width: 0;
+    padding: 13px 16px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    color: var(--ink-3);
+  }
+  .toolbar__input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
+    font-size: 14px;
+    font-weight: 300;
+  }
+  .toolbar__input:disabled { color: var(--ink-3); -webkit-text-fill-color: var(--ink-3); }
+
+  .toolbar__filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 15px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: none;
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--ink-2);
+  }
+
+  .table { display: flex; flex-direction: column; }
+
+  .table__head,
+  .case {
+    display: grid;
+    grid-template-columns:
+      minmax(230px, 300px) minmax(150px, 210px) minmax(170px, 240px)
+      90px 70px minmax(200px, 1fr);
+    align-items: center;
+    column-gap: 8px;
+  }
+
+  .case {
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 14px;
+    font-weight: 300;
+  }
+  .case:hover { background: var(--surface); }
+  .case__number { font-size: 13px; color: var(--ink); }
+  .case__cell { min-width: 0; overflow-wrap: anywhere; }
+  .case__count { font-size: 13px; }
+
+  .table__empty {
+    padding: 40px 0;
+    color: var(--ink-3);
+    font-size: 14px;
+  }
+  .table__empty-link { border-bottom: 1px solid var(--line-strong); color: var(--ink-2); }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-top: 20px;
+  }
+  .pager__range { font-size: 13px; color: var(--ink-3); }
+  .pager__controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .pager__btn {
+    padding: 8px 13px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 300;
+    color: var(--ink-2);
+  }
+  .pager__btn[aria-current='page'] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--paper);
+    font-weight: 500;
+  }
+  .pager__btn[aria-disabled='true'] { color: var(--line-strong); pointer-events: none; }
+  .pager__btn--gap { border-color: transparent; }
+
+  .coverage { padding-bottom: 56px; }
+
+  /* Below the width where six columns still read, each case becomes a block:
+     the number keeps its line, everything else is labelled and wraps. */
+  @media (max-width: 1120px) {
+    .table__head { display: none; }
+
+    .case {
+      grid-template-columns: 1fr auto;
+      gap: 4px 16px;
+      padding: 18px 0;
+    }
+    .case__number { grid-column: 1 / -1; font-size: 14px; }
+    .case__cell { display: flex; gap: 8px; }
+    .case__cell::before {
+      content: attr(data-label);
+      flex: none;
+      min-width: 8.5em;
+      font-size: 11px;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      line-height: 1.6;
+    }
+    .case__cell { grid-column: 1 / -1; }
+  }
+</style>
