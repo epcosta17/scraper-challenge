@@ -150,8 +150,8 @@ function dropDanglingOperators(parts: readonly string[]): string[] {
  * Column weights are the arguments after the table name, in declaration
  * order.
  */
-const SEARCH_SQL = `
-WITH doc_match AS (
+const FTS_CTES = `
+doc_match AS (
   SELECT
     d.id_processo_trf                       AS case_id,
     d.id_processo_documento                 AS document_id,
@@ -206,6 +206,31 @@ matched AS (
   UNION
   SELECT case_id FROM party_match
 )
+`
+
+/**
+ * The same five names, for a search with no text in it at all.
+ *
+ * A filtered search still has to answer with the shape a ranked one does —
+ * the result columns, the snippet, the three `matched_*` flags — so rather
+ * than a second SELECT kept in step with the first by hand, the four
+ * text-derived CTEs are declared empty (`WHERE 0`: no row, but the column
+ * names exist) and `matched` becomes every case. Every hit then reports a
+ * score of 0 and an empty `matchedIn`, which is the truth: nothing about it
+ * was matched through the text index.
+ */
+const EMPTY_CTES = `
+best_doc AS (
+  SELECT NULL AS case_id, NULL AS document_id, NULL AS document_label,
+         0 AS score, NULL AS snippet
+  WHERE 0
+),
+case_match AS (SELECT NULL AS case_id, 0 AS score WHERE 0),
+party_match AS (SELECT NULL AS case_id, 0 AS score WHERE 0),
+matched AS (SELECT id_processo_trf AS case_id FROM cases)
+`
+
+const RESULT_SELECT = `
 SELECT
   c.id_processo_trf,
   c.number,
@@ -231,6 +256,7 @@ JOIN cases c ON c.id_processo_trf = matched.case_id
 LEFT JOIN best_doc bd ON bd.case_id = matched.case_id
 LEFT JOIN case_match cm ON cm.case_id = matched.case_id
 LEFT JOIN party_match pm ON pm.case_id = matched.case_id
+{{WHERE}}
 -- id as the tie-break so paging is stable: without it two cases on the same
 -- score could swap places between two pages and one of them would never be
 -- seen.
@@ -254,32 +280,364 @@ interface HitRow {
   total: number
 }
 
+// ── The portal's own eight criteria, asked of the acervo ────────────────────
+
+/** What was wrong with a filter, as something other than a sentence. */
+export type SearchFilterProblem =
+  | 'date-format'
+  | 'date-not-real'
+  | 'range-inverted'
+  | 'oab-state-without-number'
+
 /**
- * Full-text search across case metadata, party names and document text,
- * ranked by BM25 and returned one row per case, with a highlighted fragment
- * of the document that matched.
+ * A filter refused before it reached SQLite: a date that is not a date, an
+ * OAB state with no number under it. Separate from `SearchQueryError`, which
+ * is about the *text* box having nothing searchable in it, because the two
+ * need different words on screen.
  *
- * Throws `SearchQueryError` for a query with nothing searchable in it —
- * rather than the alternative, which is quietly answering "every case in the
- * acervo" to an empty search box.
+ * `problem` and `field` are the reason this is not just a message. The
+ * message is in English, like the rest of this package; the interface that
+ * shows it is in Spanish and points at the offending input. Matching on the
+ * wording to work out which is which would break the first time a sentence
+ * is reworded, so the classification travels with the error instead.
  */
-export function searchCases(db: Db, query: string, opts: SearchOptions = {}): SearchResults {
-  const ftsQuery = toFtsQuery(query)
+export class SearchFilterError extends Error {
+  readonly problem: SearchFilterProblem
+  /** The criterion at fault, named as `AcervoFilters` names it. */
+  readonly field: 'from' | 'to' | 'oabState'
+  /** What the caller actually gave, for an interface that wants to quote it. */
+  readonly value: string
+
+  constructor(problem: SearchFilterProblem, field: 'from' | 'to' | 'oabState', value: string, message: string) {
+    super(message)
+    this.name = 'SearchFilterError'
+    this.problem = problem
+    this.field = field
+    this.value = value
+  }
+}
+
+/**
+ * The criteria of the TRF5's public search form, named exactly as the CLI
+ * names them (`--number`, `--from`, `--class`, …) so that one word means one
+ * thing across the scraper, the repositories and the web form.
+ *
+ * The portal answers these against its own live database; this answers them
+ * against what the crawl brought back. Every one of them is a column we
+ * actually store — see `SCHEMA`: the case's number, class and distribution
+ * date, and, for the four that are about people, the `parties` rows, where a
+ * lawyer is a participant whose `role` is `ADVOGADO` and whose `oab` is the
+ * state and the registration number run together (`PE63982`).
+ */
+export interface AcervoFilters {
+  /** CNJ number, matched exactly — the portal accepts no partials either. */
+  number?: string
+  /** Distribution date, `dd/mm/yyyy`, start of the range. */
+  from?: string
+  /** Distribution date, `dd/mm/yyyy`, end of the range. */
+  to?: string
+  /** Judicial class, matched as a substring, case- and accent-insensitively. */
+  class?: string
+  /** Name of a participant who is not a lawyer. */
+  party?: string
+  /** Name of a participant whose role is `ADVOGADO`. */
+  lawyer?: string
+  /** A CPF or a CNPJ; the punctuation is ignored on both sides. */
+  document?: string
+  documentType?: 'cpf' | 'cnpj'
+  /** OAB registration number, with or without its state prefix. */
+  oab?: string
+  /** OAB state. Refused without `oab`, which is what the portal silently ignores. */
+  oabState?: string
+  /** The reference case number, which is not always the case's own. */
+  reference?: string
+}
+
+export interface AcervoQuery {
+  /** Free text, run through FTS5 exactly as `searchCases` runs it. */
+  text?: string
+  filters?: AcervoFilters
+}
+
+/**
+ * The accents `lower()` cannot fold.
+ *
+ * SQLite's built-in `lower()` is ASCII-only — `lower('Ç')` is `'Ç'` — and it
+ * has no notion of a diacritic at all, so a `LIKE` over court data would make
+ * "APELAÇÃO" unreachable from "apelacao", which is how anybody actually types
+ * it. The FTS5 indexes solve this with `remove_diacritics 2`, but these
+ * filters are substring matches, not token matches, and cannot go through
+ * FTS5. So the same folding is done here, in SQL, over the short list of
+ * characters Portuguese court prose and Brazilian names really use.
+ *
+ * The last six entries are the combining marks: PDF text extraction produces
+ * decomposed spellings as well as precomposed ones (`c` + U+0327 for `ç`),
+ * and a fold that only knew the precomposed forms would silently miss them.
+ */
+const ACCENTED = 'áàâãäéèêëíìîïóòôõöúùûüçñ'
+const PLAIN = 'aaaaaeeeeiiiiooooouuuucn'
+
+const FOLD_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ...[...ACCENTED].map((ch, i) => [ch, PLAIN[i]!] as const),
+  ...[...ACCENTED.toUpperCase()].map((ch, i) => [ch, PLAIN[i]!] as const),
+  // Combining grave, acute, circumflex, tilde, diaeresis and cedilla.
+  ...['\u0300', '\u0301', '\u0302', '\u0303', '\u0308', '\u0327'].map((ch) => [ch, ''] as const),
+]
+
+/** The SQL side of the fold: `foldSql('c.class_name')` folds the column. */
+function foldSql(expr: string): string {
+  let sql = expr
+  for (const [from, to] of FOLD_PAIRS) sql = `replace(${sql}, '${from}', '${to}')`
+  // `lower()` last, for the ASCII the table above deliberately leaves alone.
+  return `lower(${sql})`
+}
+
+/** The TypeScript side of it, character for character, so both agree. */
+function foldValue(raw: string): string {
+  let value = raw.normalize('NFC')
+  for (const [from, to] of FOLD_PAIRS) value = value.replaceAll(from, to)
+  return value.toLowerCase()
+}
+
+/** Everything `LIKE` would otherwise read as a pattern. */
+const escapeLike = (value: string): string =>
+  value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
+
+const digitsOf = (value: string): string => value.replace(/\D+/g, '')
+
+/** Strips the punctuation a stored CPF/CNPJ carries, so both sides compare as digits. */
+const DIGITS_SQL = (expr: string): string =>
+  `replace(replace(replace(replace(${expr}, '.', ''), '-', ''), '/', ''), ' ', '')`
+
+const MONTHS_PT = [
+  'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+  'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro',
+]
+
+/**
+ * `cases.distributed_at` as a sortable `YYYY-MM-DD`, or NULL.
+ *
+ * The column holds the date *as the tribunal printed it* — the case PDF says
+ * `22 de Agosto de 2026`, some pages say `03/09/2026` — and nothing
+ * normalises it on the way in, deliberately: a date the court printed is
+ * data, not a moment we get to recompute. A range filter still has to compare
+ * them, so the conversion happens here, at read time, and anything this does
+ * not recognise becomes NULL and therefore falls outside every range rather
+ * than landing inside one by accident.
+ */
+const DISTRIBUTED_ISO = ((): string => {
+  const at = `trim(c.distributed_at)`
+  const rest = `substr(${at}, instr(${at}, ' de ') + 4)`
+  const monthWord = `substr(${rest}, 1, instr(${rest}, ' de ') - 1)`
+  const month = `CASE ${foldSql(monthWord)}\n    ` +
+    MONTHS_PT.map((name, i) =>
+      `WHEN '${foldValue(name)}' THEN '${String(i + 1).padStart(2, '0')}'`).join('\n    ') +
+    `\n    ELSE NULL END`
+  const day = `substr('0' || substr(${at}, 1, instr(${at}, ' ') - 1), -2)`
+
+  return `CASE
+  WHEN c.distributed_at IS NULL OR ${at} = '' THEN NULL
+  -- Already numeric: dd/mm/yyyy, possibly with a clock after it.
+  WHEN ${at} GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]*'
+    THEN substr(${at}, 7, 4) || '-' || substr(${at}, 4, 2) || '-' || substr(${at}, 1, 2)
+  WHEN ${at} LIKE '% de % de %'
+    THEN substr(${at}, -4) || '-' || (${month}) || '-' || ${day}
+  ELSE NULL
+END`
+})()
+
+const DATE_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/
+
+/** `17/08/2026` → `2026-08-17`; anything else is refused by name. */
+function toIsoDate(raw: string, field: 'from' | 'to'): string {
+  const m = DATE_RE.exec(raw)
+  if (m === null) {
+    throw new SearchFilterError('date-format', field, raw, `${field} must be dd/mm/yyyy, got "${raw}".`)
+  }
+  const [, day, month, year] = m as unknown as [string, string, string, string]
+  const iso = `${year}-${month}-${day}`
+  // Round-tripped through Date so that 31/13/2026 and 31/02/2026 are refused
+  // rather than compared as strings that no row can ever equal.
+  const parsed = new Date(`${iso}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) {
+    throw new SearchFilterError('date-not-real', field, raw, `${field} is not a real date: "${raw}".`)
+  }
+  return iso
+}
+
+const trimmed = (value: string | undefined): string | null => {
+  const t = (value ?? '').trim()
+  return t === '' ? null : t
+}
+
+interface FilterSql {
+  clauses: string[]
+  params: Record<string, string>
+}
+
+/**
+ * One WHERE clause per criterion given, ANDed — the portal's own semantics,
+ * where every field you fill narrows the result further.
+ *
+ * The four criteria about people are `IN (SELECT …)` over `parties` rather
+ * than joins: a case with three matching parties must stay one hit, and a
+ * semi-join says that without a DISTINCT to undo the duplication afterwards.
+ */
+function buildFilters(f: AcervoFilters): FilterSql {
+  const clauses: string[] = []
+  const params: Record<string, string> = {}
+
+  const number = trimmed(f.number)
+  if (number !== null) {
+    clauses.push('c.number = @fNumber')
+    params.fNumber = number
+  }
+
+  const reference = trimmed(f.reference)
+  if (reference !== null) {
+    clauses.push('c.reference_number = @fReference')
+    params.fReference = reference
+  }
+
+  const className = trimmed(f.class)
+  if (className !== null) {
+    clauses.push(`${foldSql('c.class_name')} LIKE @fClass ESCAPE '\\'`)
+    params.fClass = `%${escapeLike(foldValue(className))}%`
+  }
+
+  const party = trimmed(f.party)
+  if (party !== null) {
+    clauses.push(`c.id_processo_trf IN (
+    SELECT p.id_processo_trf FROM parties p
+    WHERE (p.role IS NULL OR upper(p.role) <> 'ADVOGADO')
+      AND ${foldSql('p.name')} LIKE @fParty ESCAPE '\\'
+  )`)
+    params.fParty = `%${escapeLike(foldValue(party))}%`
+  }
+
+  const lawyer = trimmed(f.lawyer)
+  if (lawyer !== null) {
+    clauses.push(`c.id_processo_trf IN (
+    SELECT p.id_processo_trf FROM parties p
+    WHERE upper(p.role) = 'ADVOGADO'
+      AND ${foldSql('p.name')} LIKE @fLawyer ESCAPE '\\'
+  )`)
+    params.fLawyer = `%${escapeLike(foldValue(lawyer))}%`
+  }
+
+  const document = trimmed(f.document)
+  if (document !== null) {
+    const typeClause = f.documentType === undefined ? '' : ' AND p.document_type = @fDocumentType'
+    clauses.push(`c.id_processo_trf IN (
+    SELECT p.id_processo_trf FROM parties p
+    WHERE p.document_number IS NOT NULL AND p.document_number <> ''
+      AND ${DIGITS_SQL('p.document_number')} = @fDocument${typeClause}
+  )`)
+    params.fDocument = digitsOf(document)
+    if (f.documentType !== undefined) params.fDocumentType = f.documentType
+  }
+
+  const oab = trimmed(f.oab)
+  const oabState = trimmed(f.oabState)
+  if (oabState !== null && oab === null) {
+    throw new SearchFilterError(
+      'oab-state-without-number', 'oabState', oabState,
+      'An OAB state has no effect without an OAB number; the portal ignores it silently.',
+    )
+  }
+  if (oab !== null) {
+    // Stored as the state and the number run together, with no separator:
+    // `PE63982`. So a number on its own is a suffix match, and a number with
+    // a state is the whole string.
+    const registration = oab.replace(/[^0-9A-Za-z]+/g, '').toUpperCase()
+    const stored = `upper(replace(p.oab, ' ', ''))`
+    const where = oabState === null
+      ? `${stored} LIKE @fOab ESCAPE '\\'`
+      : `${stored} = @fOab`
+    params.fOab = oabState === null
+      ? `%${escapeLike(registration)}`
+      : `${oabState.replace(/[^A-Za-z]+/g, '').toUpperCase()}${digitsOf(registration)}`
+    clauses.push(`c.id_processo_trf IN (
+    SELECT p.id_processo_trf FROM parties p
+    WHERE p.oab IS NOT NULL AND p.oab <> '' AND ${where}
+  )`)
+  }
+
+  const from = trimmed(f.from)
+  const to = trimmed(f.to)
+  const fromIso = from === null ? null : toIsoDate(from, 'from')
+  const toIso = to === null ? null : toIsoDate(to, 'to')
+  if (fromIso !== null && toIso !== null && fromIso > toIso) {
+    throw new SearchFilterError(
+      // Both are non-null here: `toIso` only exists when `to` did.
+      'range-inverted', 'to', to!,
+      `The date range ends before it starts: ${from} → ${to}.`,
+    )
+  }
+  if (fromIso !== null) {
+    clauses.push(`(${DISTRIBUTED_ISO}) >= @fFrom`)
+    params.fFrom = fromIso
+  }
+  if (toIso !== null) {
+    clauses.push(`(${DISTRIBUTED_ISO}) <= @fTo`)
+    params.fTo = toIso
+  }
+
+  return { clauses, params }
+}
+
+/**
+ * The portal's form and the full-text index, in one statement.
+ *
+ * The text goes to FTS5 as it always did, ranked and snippeted; the filters
+ * become a WHERE over the matched set. Because they are one query, the count
+ * and the ranking describe the same rows — a filter applied after the fact,
+ * in TypeScript, would leave `total` counting cases the caller never sees.
+ *
+ * With no text at all the same statement runs over every case, so a purely
+ * filtered search is not a different code path: it is this one with the four
+ * text CTEs empty.
+ *
+ * Throws `SearchQueryError` when there is nothing to search by — no text and
+ * no filter — rather than quietly answering "the whole acervo", and
+ * `SearchFilterError` for a filter that cannot mean anything.
+ */
+export function searchAcervo(db: Db, query: AcervoQuery, opts: SearchOptions = {}): SearchResults {
+  const text = (query.text ?? '').trim()
+  // Filters are validated first: an OAB state on its own is a mistake worth
+  // naming, and reporting "nothing to search by" instead would hide it.
+  const filters = buildFilters(query.filters ?? {})
+
+  if (text === '' && filters.clauses.length === 0) {
+    throw new SearchQueryError(
+      'A search with neither a query nor a filter would answer with the whole acervo.',
+    )
+  }
+
   const limit = opts.limit ?? DEFAULT_LIMIT
   const offset = opts.offset ?? 0
+  const ftsQuery = text === '' ? '' : toFtsQuery(text)
 
-  const rows = db.prepare(SEARCH_SQL).all({
-    q: ftsQuery,
-    limit,
-    offset,
-    hlStart: opts.highlightStart ?? '[',
-    hlEnd: opts.highlightEnd ?? ']',
-    ellipsis: ELLIPSIS,
-    snippetTokens: SNIPPET_TOKENS,
-  }) as HitRow[]
+  const where = filters.clauses.length === 0
+    ? ''
+    : `WHERE ${filters.clauses.join('\n  AND ')}`
+  const sql = `WITH ${text === '' ? EMPTY_CTES : FTS_CTES}${RESULT_SELECT.replace('{{WHERE}}', where)}`
+
+  // Named parameters are matched exactly by better-sqlite3, so only the ones
+  // the built statement actually mentions may be handed over.
+  const params: Record<string, string | number> = { limit, offset, ...filters.params }
+  if (text !== '') {
+    params.q = ftsQuery
+    params.hlStart = opts.highlightStart ?? '['
+    params.hlEnd = opts.highlightEnd ?? ']'
+    params.ellipsis = ELLIPSIS
+    params.snippetTokens = SNIPPET_TOKENS
+  }
+
+  const rows = db.prepare(sql).all(params) as HitRow[]
 
   return {
-    query,
+    query: text,
     ftsQuery,
     // `COUNT(*) OVER ()` only comes back on rows that exist; an empty page
     // (past the end of the results, say) carries no count with it. Callers
@@ -290,6 +648,23 @@ export function searchCases(db: Db, query: string, opts: SearchOptions = {}): Se
     offset,
     hits: rows.map(toHit),
   }
+}
+
+/**
+ * Full-text search across case metadata, party names and document text,
+ * ranked by BM25 and returned one row per case, with a highlighted fragment
+ * of the document that matched.
+ *
+ * The text-only case of {@link searchAcervo}, and the shape most callers
+ * want. Throws `SearchQueryError` for a query with nothing searchable in it —
+ * rather than the alternative, which is quietly answering "every case in the
+ * acervo" to an empty search box.
+ */
+export function searchCases(db: Db, query: string, opts: SearchOptions = {}): SearchResults {
+  // `toFtsQuery` first, so that a query of pure punctuation is still refused
+  // by the message it has always been refused by.
+  toFtsQuery(query)
+  return { ...searchAcervo(db, { text: query }, opts), query }
 }
 
 function toHit(r: HitRow): SearchHit {

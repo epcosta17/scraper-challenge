@@ -212,3 +212,47 @@ export function countCapturedSince(db: Db, sinceUtc: string): { cases: number; d
   `).get({ since: sinceUtc }) as { cases: number; documents: number }
   return row
 }
+
+/** A judicial class present in the acervo, with how many cases carry it. */
+export interface AcervoClass {
+  className: string
+  caseCount: number
+}
+
+/**
+ * The judicial classes the acervo actually holds, commonest first.
+ *
+ * The portal's own form offers the whole CNJ catalogue — 132 entries — because
+ * it searches a live court. A search over what the crawl brought back can only
+ * ever answer for the classes that are in it, so this is what a class control
+ * over the acervo is allowed to offer.
+ */
+export function listCaseClasses(db: Db): AcervoClass[] {
+  const rows = db.prepare(`
+    SELECT class_name, COUNT(*) AS case_count
+    FROM cases
+    WHERE class_name IS NOT NULL AND class_name <> ''
+    GROUP BY class_name
+    ORDER BY case_count DESC, class_name
+  `).all() as Array<{ class_name: string; case_count: number }>
+  return rows.map((r) => ({ className: r.class_name, caseCount: r.case_count }))
+}
+
+/**
+ * The OAB states the acervo holds a lawyer for, as two-letter UFs.
+ *
+ * `parties.oab` stores the registration the way the portal prints it — the
+ * state and the number run together, `PE63982` — so the UF is its first two
+ * characters, and a row whose registration does not start with letters is not
+ * one. Same reason as `listCaseClasses`: a state control over the acervo can
+ * only honestly offer the states that are in it.
+ */
+export function listOabStates(db: Db): string[] {
+  const rows = db.prepare(`
+    SELECT DISTINCT upper(substr(replace(oab, ' ', ''), 1, 2)) AS uf
+    FROM parties
+    WHERE oab IS NOT NULL AND replace(oab, ' ', '') GLOB '[A-Za-z][A-Za-z]*'
+    ORDER BY uf
+  `).all() as Array<{ uf: string }>
+  return rows.map((r) => r.uf)
+}
