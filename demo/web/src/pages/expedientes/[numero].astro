@@ -2,18 +2,46 @@
 import Base from '../../layouts/Base.astro'
 import Icon from '../../components/Icon.astro'
 import CoverageNotice from '../../components/CoverageNotice.astro'
-import { data } from '../../data/index.ts'
+import { data, runner } from '../../data/index.ts'
 import { isPartial } from '../../data/types.ts'
 import { formatBytes, formatInt, plural } from '../../lib/format.ts'
 
 const { numero } = Astro.params
+
+/**
+ * Refreshing happens here, not on the queue screen.
+ *
+ * It still goes through the queue — this page never scrapes — but queueing is
+ * not something a reader should have to navigate to do: you are looking at a
+ * case, you want it re-read, and one click is the whole gesture. The redirect
+ * comes straight back to this case, so the page you asked from is the page you
+ * end up on, now with the job visible on it.
+ */
+if (Astro.request.method === 'POST' && numero) {
+  const outcome = await data.enqueue('refresh_case', numero)
+  if (!outcome.ok) {
+    return Astro.redirect(`/expedientes/${numero}?error=${encodeURIComponent(outcome.error)}`)
+  }
+  // Nothing runs on its own here: a worker exists because this click asked for
+  // one. If a worker is already up it takes this job too, so no second process.
+  const started = runner.ensureRunning()
+  return Astro.redirect(
+    `/expedientes/${numero}?trabajo=${outcome.job.id}&${started.started ? 'arrancado' : 'encolado'}`,
+  )
+}
+
 const caseFile = numero ? await data.getCase(numero) : null
 
 if (caseFile === null) {
   Astro.response.status = 404
 }
 
-const showAllMovements = Astro.url.searchParams.get('movimientos') === 'todos'
+const params = Astro.url.searchParams
+const queuedJobId = params.get('trabajo')
+const queueError = params.get('error')
+const workerStarted = params.has('arrancado')
+
+const showAllMovements = params.get('movimientos') === 'todos'
 const MOVEMENT_PREVIEW = 5
 
 const capture = caseFile?.capture
@@ -66,6 +94,23 @@ const movements = caseFile
             <span class="mono">{caseFile.number}</span>
           </nav>
 
+          {queueError !== null && (
+            <p class="queued queued--bad" role="alert">{queueError}</p>
+          )}
+
+          {queuedJobId !== null && (
+            <div class="queued" data-live-job={queuedJobId} role="status" aria-live="polite">
+              <span class="dot dot--ok" aria-hidden="true" />
+              <span class="queued__text">
+                {workerStarted
+                  ? `Recaptura encolada (trabajo #${queuedJobId}) y worker arrancado.`
+                  : `Recaptura encolada (trabajo #${queuedJobId}). La toma el worker que ya está corriendo.`}
+              </span>
+              <span class="queued__progress mono" />
+              <a class="queued__link" href="/procesos">Ver la cola</a>
+            </div>
+          )}
+
           <div class="case-head__row">
             <div>
               <h1 class="case-head__number">{caseFile.number}</h1>
@@ -78,14 +123,16 @@ const movements = caseFile
             </div>
 
             <div class="case-head__actions">
-              <a
-                class="btn"
-                href={`/procesos?tipo=refresh_case&objetivo=${caseFile.number}`}
-                title="Prepara un trabajo de recaptura en la cola; lo ejecuta un worker, no esta pantalla"
-              >
-                <Icon name="refresh-cw" size={15} />
-                Refrescar expediente
-              </a>
+              <form method="POST" class="case-head__refresh">
+                <button
+                  class="btn"
+                  type="submit"
+                  title="Encola una recaptura de este expediente y arranca un worker si no hay ninguno"
+                >
+                  <Icon name="refresh-cw" size={15} />
+                  Refrescar expediente
+                </button>
+              </form>
               <a
                 class="btn btn--ghost"
                 href={`/expedientes/${caseFile.number}/resumen.pdf`}
@@ -294,10 +341,13 @@ const movements = caseFile
                         <span class="doc__fmt mono">{d.format}</span>
                         <span class="doc__actions">
                           <a
-                            class="doc__action"
+                            class="doc__action doc__action--view"
                             href={`/documentos/${d.id}`}
                             target="_blank"
                             rel="noopener"
+                            data-view={d.id}
+                            data-label={d.label}
+                            data-format={d.format}
                             aria-label={`Previsualizar ${d.label}`}
                             title="Previsualizar"
                           >
@@ -320,12 +370,266 @@ const movements = caseFile
             </section>
           </aside>
         </div>
+
+        {/*
+          The viewer. It is a real <dialog>, so Esc closes it, focus is trapped
+          while it is open and the page behind it is inert — none of which is
+          worth hand-rolling. The PDF is shown by the browser's own viewer in an
+          iframe: these files were downloaded to be read, and sending somebody
+          to a separate tab to read one is not a preview.
+
+          It stays empty until something is opened, so a case file with forty
+          documents costs one iframe, not forty.
+        */}
+        <dialog class="viewer" id="viewer" aria-label="Documento">
+          <header class="viewer__bar">
+            <span class="viewer__title" id="viewer-title" />
+            <span class="viewer__count mono" id="viewer-count" />
+            <span class="viewer__spacer" />
+            <button class="viewer__btn" type="button" id="viewer-prev" title="Documento anterior (←)" aria-label="Documento anterior">
+              <Icon name="chevron-left" size={16} />
+            </button>
+            <button class="viewer__btn" type="button" id="viewer-next" title="Documento siguiente (→)" aria-label="Documento siguiente">
+              <Icon name="chevron-right" size={16} />
+            </button>
+            <a class="viewer__btn" id="viewer-download" href="#" title="Descargar" aria-label="Descargar">
+              <Icon name="download" size={16} />
+            </a>
+            <a class="viewer__btn" id="viewer-tab" href="#" target="_blank" rel="noopener" title="Abrir en una pestaña" aria-label="Abrir en una pestaña">
+              <Icon name="external-link" size={16} />
+            </a>
+            <button class="viewer__btn viewer__btn--close" type="button" id="viewer-close" title="Cerrar (Esc)" aria-label="Cerrar">
+              <Icon name="x" size={16} />
+            </button>
+          </header>
+          <iframe class="viewer__frame" id="viewer-frame" title="Documento" />
+        </dialog>
       </>
     )
   }
 </Base>
 
+<script>
+  /**
+   * Two small jobs, both of which exist because the page would otherwise be
+   * silent about something happening: reading a document without leaving the
+   * case, and showing a queued capture actually progressing.
+   *
+   * Plain DOM on purpose — this is the only interactive corner of the app, and
+   * a framework to run it would be a dependency the rest of the site does not
+   * want.
+   */
+  const dialog = document.getElementById('viewer') as HTMLDialogElement | null
+  const frame = document.getElementById('viewer-frame') as HTMLIFrameElement | null
+
+  if (dialog && frame) {
+    const title = document.getElementById('viewer-title')!
+    const count = document.getElementById('viewer-count')!
+    const download = document.getElementById('viewer-download') as HTMLAnchorElement
+    const tab = document.getElementById('viewer-tab') as HTMLAnchorElement
+    const prev = document.getElementById('viewer-prev') as HTMLButtonElement
+    const next = document.getElementById('viewer-next') as HTMLButtonElement
+
+    // Every document on the page, in the order they are listed, so the arrows
+    // walk the case file the way a reader would.
+    const links = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>('a[data-view]'),
+    )
+    let at = 0
+
+    const show = (index: number): void => {
+      const link = links[index]
+      if (!link) return
+      at = index
+      const id = link.dataset.view
+      title.textContent = link.dataset.label ?? ''
+      count.textContent = `${index + 1} / ${links.length}`
+      // Assigned rather than pushed as a new src attribute each time: the same
+      // frame is reused, so opening a fortieth document costs no more than the
+      // first.
+      frame.src = `/documentos/${id}`
+      download.href = `/documentos/${id}?descargar`
+      tab.href = `/documentos/${id}`
+      prev.disabled = index === 0
+      next.disabled = index === links.length - 1
+    }
+
+    for (const [index, link] of links.entries()) {
+      link.addEventListener('click', (event) => {
+        // Ctrl/⌘-click, middle click and "open in new tab" keep working: the
+        // eye is still a real link, and this only takes over the plain click.
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+        event.preventDefault()
+        show(index)
+        dialog.showModal()
+      })
+    }
+
+    prev.addEventListener('click', () => show(at - 1))
+    next.addEventListener('click', () => show(at + 1))
+    document.getElementById('viewer-close')!.addEventListener('click', () => dialog.close())
+
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft') { event.preventDefault(); show(at - 1) }
+      if (event.key === 'ArrowRight') { event.preventDefault(); show(at + 1) }
+    })
+
+    // Dropping the src on close stops a PDF rendering behind a closed dialog,
+    // and means reopening always starts from the top of the document.
+    dialog.addEventListener('close', () => { frame.removeAttribute('src') })
+
+    // A click on the backdrop lands on the dialog itself, never on its content.
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close()
+    })
+  }
+
+  /**
+   * The queued-capture banner. It polls only while there is something to watch
+   * and stops the moment the queue goes quiet, so a finished page makes no
+   * requests at all.
+   */
+  const banner = document.querySelector<HTMLElement>('[data-live-job]')
+  if (banner) {
+    const jobId = Number(banner.dataset.liveJob)
+    const text = banner.querySelector<HTMLElement>('.queued__text')!
+    const progress = banner.querySelector<HTMLElement>('.queued__progress')!
+
+    const tick = async (): Promise<void> => {
+      let payload: any
+      try {
+        const response = await fetch('/cola.json', { headers: { accept: 'application/json' } })
+        if (!response.ok) return
+        payload = await response.json()
+      } catch {
+        // A poll that fails is not worth reporting: the work is happening in
+        // another process either way, and the next tick will say so.
+        return
+      }
+
+      const job = payload.jobs?.find((j: any) => j.id === jobId)
+      if (job) {
+        const { done, total, totalIsEstimate } = job.progress ?? {}
+        progress.textContent =
+          job.state === 'running' && typeof done === 'number' && done > 0
+            ? (total ? `${done} / ${totalIsEstimate ? '~' : ''}${total}` : String(done))
+            : ''
+
+        if (job.state === 'done') {
+          text.textContent = 'Recaptura terminada. Recarga para ver lo nuevo.'
+          banner.classList.add('queued--done')
+          banner.querySelector('.dot')?.classList.remove('dot--ok')
+        } else if (job.state === 'failed') {
+          text.textContent = `La recaptura falló: ${job.error ?? 'sin motivo registrado'}`
+          banner.classList.add('queued--bad')
+        } else if (job.state === 'running') {
+          // The engine's own words when it has any: "reading the case file"
+          // beats "recapturando…" precisely because it changes.
+          text.textContent = job.stage
+            ? `Recapturando: ${job.stage}`
+            : 'Recapturando este expediente…'
+        }
+      }
+
+      if (payload.active) setTimeout(tick, 1500)
+    }
+
+    void tick()
+  }
+</script>
+
 <style>
+  /* The queued-capture banner: present only after a refresh was asked for. */
+  .queued {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding: 9px 12px;
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--ok);
+    background: var(--surface);
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .queued--done { border-left-color: var(--line-strong); }
+  .queued--bad { border-left-color: var(--bad); color: var(--bad); }
+  .queued__text { flex: 1 1 auto; }
+  .queued__progress { color: var(--ink); font-size: 12px; }
+  .queued__progress:empty { display: none; }
+  .queued__link { color: var(--ink-2); text-underline-offset: 3px; }
+  .queued__link:hover { color: var(--ink); }
+  .case-head__refresh { margin: 0; }
+
+  /*
+    The document viewer. Sized against the viewport rather than its content:
+    a PDF has no intrinsic height to lay out against, so without this the
+    dialog collapses to nothing and shows a sliver of the first page.
+  */
+  .viewer {
+    width: min(1100px, 94vw);
+    height: min(88vh, 1000px);
+    max-width: none;
+    max-height: none;
+    padding: 0;
+    border: 1px solid var(--line-strong);
+    background: var(--paper);
+    color: var(--ink);
+    /* Overriding the UA centring, which leaves the dialog top-left in some
+       browsers once width and height are set explicitly. */
+    margin: auto;
+  }
+  .viewer::backdrop { background: rgb(17 17 17 / 42%); }
+
+  .viewer__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 8px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .viewer__title {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .viewer__count { font-size: 11px; color: var(--ink-3); }
+  .viewer__spacer { flex: 1 1 auto; }
+
+  .viewer__btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .viewer__btn:hover { border-color: var(--line); color: var(--ink); background: var(--paper); }
+  .viewer__btn:disabled { opacity: 0.3; cursor: default; }
+  .viewer__btn:disabled:hover { border-color: transparent; background: none; color: var(--ink-2); }
+  .viewer__btn--close { margin-left: 4px; }
+
+  .viewer__frame {
+    display: block;
+    width: 100%;
+    /* The bar is 45px; the frame takes the rest so the PDF fills the dialog. */
+    height: calc(100% - 45px);
+    border: 0;
+    background: var(--surface);
+  }
+
+  @media (max-width: 640px) {
+    .viewer { width: 100vw; height: 100vh; border: 0; }
+    .viewer__frame { height: calc(100% - 45px); }
+  }
+
   .missing {
     display: flex;
     flex-direction: column;
