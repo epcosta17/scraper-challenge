@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "demo/*"],
   "engines": { "node": ">=22" },
   "scripts": {
     "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/scraper",
