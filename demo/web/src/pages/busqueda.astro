@@ -133,15 +133,54 @@ const found = outcome !== null && outcome.ok ? outcome : null
 <Base
   title="Búsqueda"
   current="busqueda"
-  description="Los ocho criterios del formulario del TRF5, más el texto íntegro de cada documento, sobre el acervo capturado."
+  description="El formulario público del TRF5, consultado en vivo."
 >
   <section class="head gutter">
-    <p class="eyebrow">07 — BÚSQUEDA EN EL ACERVO</p>
-    <h1 class="page-title page-title--md">Consulta del acervo</h1>
-    <p class="lede lede--sm">
-      Los mismos ocho campos del formulario del TRF5, con sus reglas, y uno más que el portal no
-      tiene: el texto íntegro de cada documento capturado. Se combinan entre sí.
-    </p>
+    <p class="eyebrow">07 — BÚSQUEDA EN EL PORTAL</p>
+    <h1 class="page-title page-title--md">Consulta al TRF5</h1>
+
+    {/*
+      The portal's rules, as a panel that floats on hover. Each one is
+      something the server does silently rather than reporting, so they are
+      worth having at hand — but they are reference, not instruction, and
+      nothing on this screen should make you read past them to reach the form.
+
+      `tabindex` and `:focus-within` are not decoration: a tooltip that only
+      answers to a mouse is a tooltip half the people cannot open.
+    */}
+    <div class="rules">
+      <span class="rules__ask" tabindex="0" role="button" aria-describedby="rules-panel">
+        <span class="rules__mark" aria-hidden="true">?</span>
+        <span>Reglas del portal</span>
+      </span>
+      <div class="rules__panel" id="rules-panel" role="tooltip">
+        <dl class="syntax">
+          <div class="syntax__row">
+            <dt>Parte y abogado</dt>
+            <dd>al menos dos nombres; con uno solo el servidor rechaza la consulta</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>OAB</dt>
+            <dd>el estado no filtra sin el número, y el portal no avisa: lo ignora</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>Fechas</dt>
+            <dd><span class="mono">dd/mm/aaaa</span>, sobre la fecha de autuación</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>Nº y referencia</dt>
+            <dd>exactos: el portal no acepta parciales ni comodines</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>30 filas</dt>
+            <dd>
+              el portal corta ahí dentro de su propia consulta y no hay página dos: si sale
+              recortado, la única salida es afinar la búsqueda
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </div>
   </section>
 
   <div class="split" style="--aside: 440px">
@@ -160,29 +199,51 @@ const found = outcome !== null && outcome.ok ? outcome : null
         </div>
 
         <div class="field">
-          <span class="field-label" id="f-dates">FECHA DE DISTRIBUCIÓN</span>
+          <span class="field-label" id="f-dates">FECHA DE AUTUACIÓN</span>
+          {/*
+            Typed and picked, both, and the same field either way.
+
+            The input holds dd/mm/aaaa — what the portal wants and what ends up
+            in the URL — so a date can be typed, pasted or edited by hand. The
+            button opens a calendar built here rather than the browser's own:
+            a native `type="date"` shows and accepts whatever format the
+            viewer's locale happens to use, which for an American locale is
+            mm/dd and would silently mean a different day.
+          */}
           <div class="pair" role="group" aria-labelledby="f-dates">
-            <input
-              class="input input--mono"
-              name="from"
-              value={filters.from}
-              aria-invalid={failed?.kind === 'invalid' ? 'true' : undefined}
-              aria-label="Desde"
-              placeholder="01/08/2026"
-            />
-            <input
-              class="input input--mono"
-              name="to"
-              value={filters.to}
-              aria-invalid={failed?.kind === 'invalid' ? 'true' : undefined}
-              aria-label="Hasta"
-              placeholder="31/08/2026"
-            />
+            <div class="date" data-date>
+              <input
+                class="input input--mono"
+                name="from"
+                data-date-text
+                value={filters.from}
+                autocomplete="off"
+                aria-invalid={failed?.kind === 'invalid' ? 'true' : undefined}
+                aria-label="Desde"
+                placeholder="dd/mm/aaaa"
+              />
+              <button class="date__open" type="button" data-date-open aria-label="Abrir el calendario" aria-expanded="false">
+                <Icon name="calendar" size={14} />
+              </button>
+            </div>
+            <div class="date" data-date>
+              <input
+                class="input input--mono"
+                name="to"
+                data-date-text
+                value={filters.to}
+                autocomplete="off"
+                aria-invalid={failed?.kind === 'invalid' ? 'true' : undefined}
+                aria-label="Hasta"
+                placeholder="dd/mm/aaaa"
+              />
+              <button class="date__open" type="button" data-date-open aria-label="Abrir el calendario" aria-expanded="false">
+                <Icon name="calendar" size={14} />
+              </button>
+            </div>
           </div>
           <p class="hint">
-            El portal filtra por fecha de autuación; de cada expediente solo se captura la fecha de
-            distribución que imprime su ficha, y es la que se compara aquí. Un expediente sin fecha
-            capturada queda fuera de cualquier rango.
+            La fecha de autuación, como la filtra el portal. Escríbela o elígela en el calendario.
           </p>
         </div>
 
@@ -303,49 +364,9 @@ const found = outcome !== null && outcome.ok ? outcome : null
         </div>
       </form>
 
-      <section class="aside-block">
-        <h2 class="field-label">REGLAS DEL PORTAL</h2>
-        <dl class="syntax">
-          <div class="syntax__row">
-            <dt>Parte y abogado</dt>
-            <dd>al menos dos nombres; con uno solo el servidor rechaza la consulta</dd>
-          </div>
-          <div class="syntax__row">
-            <dt>OAB</dt>
-            <dd>el estado no filtra sin el número, y el portal no avisa: lo ignora</dd>
-          </div>
-          <div class="syntax__row">
-            <dt>Fechas</dt>
-            <dd><span class="mono">dd/mm/aaaa</span>, sobre la fecha de autuación</dd>
-          </div>
-          <div class="syntax__row">
-            <dt>Nº y referencia</dt>
-            <dd>exactos: el portal no acepta parciales ni comodines</dd>
-          </div>
-        </dl>
-        <p class="hint">
-          Para buscar dentro del texto de los documentos que ya bajamos, eso es otra pregunta y no
-          la contesta el portal: <span class="mono">npm run scraper -- find "…"</span>.
-        </p>
-      </section>
     </aside>
 
     <div class="split__main results">
-      <section class="cap" role="note" aria-label="El tope de filas del portal">
-        <Icon name="triangle-alert" size={16} />
-        <div>
-          <p class="cap__title">
-            El portal corta toda consulta en {formatInt(PORTAL_ROW_LIMIT)} filas.
-          </p>
-          <p class="cap__body">
-            No es una página de {formatInt(PORTAL_ROW_LIMIT)}: el límite está dentro de la consulta
-            que el servidor ejecuta, no en la vista, así que no hay página dos y ningún parámetro,
-            orden ni desplazamiento lo salva. Si tu búsqueda sale recortada, la única salida es
-            afinarla. Para recorrer el acervo entero está{' '}
-            <span class="mono">crawl</span>, que va por id interno y no pasa por este formulario.
-          </p>
-        </div>
-      </section>
 
       {
         failed !== null && (
@@ -468,7 +489,265 @@ const found = outcome !== null && outcome.ok ? outcome : null
   </div>
 </Base>
 
+<script>
+  /**
+   * The calendar behind each date field.
+   *
+   * Built here rather than borrowed from the browser because `type="date"`
+   * shows and accepts dates in the viewer's locale: on an American machine
+   * that is mm/dd, so `03/09` would quietly mean March and this form would
+   * send the portal a different day than the one on screen. The field is
+   * dd/mm/aaaa for everyone, typed or picked, and that is also what travels
+   * in the URL.
+   *
+   * The text input stays the source of truth. The panel reads it to decide
+   * which month to open on, and writes back to it — nothing else holds state.
+   */
+  const MONTHS = [
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+  ]
+  // Monday first: the week as it is read in Spain and Brazil, not Sunday-first.
+  const WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D']
+
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const written = (y: number, m: number, d: number): string => `${pad(d)}/${pad(m + 1)}/${y}`
+
+  /** dd/mm/aaaa → a date, or null. Rejects 31/02 rather than rolling it over. */
+  function parseWritten(value: string): Date | null {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value.trim())
+    if (!m) return null
+    const [d, mo, y] = [Number(m[1]), Number(m[2]), Number(m[3])]
+    const date = new Date(y, mo - 1, d)
+    // Constructed in local time on purpose: a bare ISO string would be read as
+    // UTC and could come back as the day before.
+    return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d
+      ? date
+      : null
+  }
+
+  for (const field of document.querySelectorAll<HTMLElement>('[data-date]')) {
+    const text = field.querySelector<HTMLInputElement>('[data-date-text]')!
+    const open = field.querySelector<HTMLButtonElement>('[data-date-open]')!
+
+    const panel = document.createElement('div')
+    panel.className = 'cal'
+    panel.hidden = true
+    field.append(panel)
+
+    const today = new Date()
+    let shown = new Date(today.getFullYear(), today.getMonth(), 1)
+
+    function render(): void {
+      const picked = parseWritten(text.value)
+      const year = shown.getFullYear()
+      const month = shown.getMonth()
+      const first = new Date(year, month, 1)
+      // getDay() is Sunday-based; shift so Monday starts the row.
+      const lead = (first.getDay() + 6) % 7
+      const days = new Date(year, month + 1, 0).getDate()
+
+      const cells: string[] = []
+      for (let i = 0; i < lead; i++) cells.push('<span class="cal__pad"></span>')
+      for (let d = 1; d <= days; d++) {
+        const isPicked = picked !== null
+          && picked.getFullYear() === year && picked.getMonth() === month && picked.getDate() === d
+        const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === d
+        cells.push(
+          `<button type="button" class="cal__day${isPicked ? ' is-picked' : ''}${isToday ? ' is-today' : ''}" data-day="${d}">${d}</button>`,
+        )
+      }
+
+      panel.innerHTML = `
+        <div class="cal__head">
+          <button type="button" class="cal__nav" data-move="-1" aria-label="Mes anterior">‹</button>
+          <span class="cal__month">${MONTHS[month]} ${year}</span>
+          <button type="button" class="cal__nav" data-move="1" aria-label="Mes siguiente">›</button>
+        </div>
+        <div class="cal__grid cal__grid--head">${WEEKDAYS.map((w) => `<span>${w}</span>`).join('')}</div>
+        <div class="cal__grid">${cells.join('')}</div>
+        <button type="button" class="cal__today" data-today>Hoy</button>
+      `
+    }
+
+    const show = (): void => {
+      // Opening on the month you already typed, rather than always on today.
+      shown = parseWritten(text.value) ?? new Date(today.getFullYear(), today.getMonth(), 1)
+      shown = new Date(shown.getFullYear(), shown.getMonth(), 1)
+      render()
+      panel.hidden = false
+      open.setAttribute('aria-expanded', 'true')
+    }
+    const hide = (): void => {
+      panel.hidden = true
+      open.setAttribute('aria-expanded', 'false')
+    }
+
+    open.addEventListener('click', () => { panel.hidden ? show() : hide() })
+
+    panel.addEventListener('click', (event) => {
+      const el = (event.target as HTMLElement).closest('button')
+      if (!el) return
+      if (el.dataset.move) {
+        shown = new Date(shown.getFullYear(), shown.getMonth() + Number(el.dataset.move), 1)
+        render()
+        return
+      }
+      if (el.dataset.today !== undefined) {
+        text.value = written(today.getFullYear(), today.getMonth(), today.getDate())
+        hide()
+        return
+      }
+      if (el.dataset.day) {
+        text.value = written(shown.getFullYear(), shown.getMonth(), Number(el.dataset.day))
+        hide()
+      }
+    })
+
+    // A calendar left open over the rest of the form is in the way; anywhere
+    // outside closes it, and so does Escape.
+    document.addEventListener('click', (event) => {
+      if (!panel.hidden && !field.contains(event.target as Node)) hide()
+    })
+    field.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !panel.hidden) { event.stopPropagation(); hide() }
+    })
+  }
+</script>
+
 <style>
+  /* The date field, and the calendar that drops out of it. */
+  .date { position: relative; }
+  .date .input { width: 100%; padding-right: 32px; }
+  .date__open {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: calc(100% - 2px);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--ink-3);
+    cursor: pointer;
+  }
+  .date__open:hover { color: var(--ink); }
+
+  .cal {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    z-index: 30;
+    width: 236px;
+    padding: 10px;
+    border: 1px solid var(--line-strong);
+    background: var(--paper);
+    box-shadow: 0 6px 24px rgb(17 17 17 / 12%);
+  }
+  .cal__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .cal__month { font-size: 12px; color: var(--ink); }
+  .cal__nav {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .cal__nav:hover { border-color: var(--line); color: var(--ink); }
+
+  .cal__grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+  .cal__grid--head {
+    margin-bottom: 3px;
+    font-size: 10px;
+    color: var(--ink-3);
+    text-align: center;
+  }
+  .cal__pad { display: block; }
+  .cal__day {
+    aspect-ratio: 1;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .cal__day:hover { border-color: var(--line-strong); color: var(--ink); }
+  /* Today is outlined, the chosen day is filled: one is where you are, the
+     other is what you picked, and they must not look like the same thing. */
+  .cal__day.is-today { border-color: var(--line); }
+  .cal__day.is-picked { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+
+  .cal__today {
+    width: 100%;
+    margin-top: 8px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    background: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .cal__today:hover { border-color: var(--line-strong); color: var(--ink); }
+
+
+  /* The rules: a panel that floats over the page, on hover or focus. */
+  .rules { position: relative; display: inline-block; margin-top: 10px; }
+  .rules__ask {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--ink-3);
+    cursor: help;
+  }
+  .rules__ask:hover, .rules__ask:focus-visible { color: var(--ink-2); }
+  .rules__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    font-size: 10px;
+    line-height: 1;
+  }
+  .rules__panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 20;
+    width: min(460px, calc(100vw - 48px));
+    padding: 14px 16px;
+    border: 1px solid var(--line-strong);
+    background: var(--paper);
+    /* The one shadow on the page: it is the only element that floats over
+       another, and without it the panel reads as part of what it covers. */
+    box-shadow: 0 6px 24px rgb(17 17 17 / 10%);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 90ms ease, visibility 90ms;
+  }
+  .rules:hover .rules__panel,
+  .rules:focus-within .rules__panel { opacity: 1; visibility: visible; }
+  .rules__panel .syntax { margin: 0; }
+
   .head {
     display: flex;
     flex-direction: column;
@@ -543,36 +822,11 @@ const found = outcome !== null && outcome.ok ? outcome : null
 
   .actions { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
 
-  .aside-block {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding-top: 24px;
-    border-top: 1px solid var(--line);
-  }
   .syntax { display: flex; flex-direction: column; gap: 10px; }
   .syntax__row { display: flex; flex-direction: column; gap: 3px; }
   .syntax dt { font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
   .syntax dd { font-size: 12px; font-weight: 300; color: var(--ink-2); }
 
-  .cap {
-    display: flex;
-    gap: 12px;
-    padding: 16px;
-    background: var(--surface);
-    border-left: 2px solid var(--warn);
-    border-radius: var(--radius);
-  }
-  .cap :global(svg) { color: var(--warn); margin-top: 2px; flex: none; }
-  .cap__title { font-size: 14px; font-weight: 500; color: var(--ink); }
-  .cap__body {
-    margin-top: 5px;
-    font-size: 13px;
-    font-weight: 300;
-    line-height: 1.55;
-    color: var(--ink-2);
-  }
-  .cap__body .mono { font-size: 12px; color: var(--ink); }
 
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip {
