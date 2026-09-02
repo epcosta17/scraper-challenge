@@ -141,6 +141,10 @@ async function runOneCase(deps: HandlerDeps, ctx: HandlerContext, target: DeepTa
 
   if (outcome.kind === 'failed') throw new Error(outcome.error)
   ctx.reporter.deepCase(outcome)
+  // Done, not failed: the portal answered and there was no case behind the
+  // id. Throwing would put the job through the retry budget for something no
+  // retry can change.
+  if (outcome.kind === 'absent') return outcome.reason
   return `${outcome.number} (id ${outcome.idProcessoTrf}): ` +
     `${outcome.documentsStored} documents stored, ${outcome.documentsSkipped} already on disk, ` +
     `${outcome.documentsFailed} failed`
