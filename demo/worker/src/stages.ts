@@ -27,6 +27,7 @@ export function stageOf(e: DeepStepEvent): string | null {
       ? 'resolving the detail key through the search bridge'
       : 'resolving the detail key'
     case 'detail_key_retry': return `retrying the detail key (${e.attempt} of ${e.of})`
+    case 'movements_page': return `reading the movements table (page ${e.page} of ${e.of})`
     case 'case_file': return 'reading the case file'
     case 'case_file_ok': return `the case file lists ${e.documentCount} documents`
     case 'documents': return null
