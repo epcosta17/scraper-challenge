@@ -45,6 +45,15 @@ export interface ClassifiedPdfOptions {
    * seconds in the middle of a step that claimed to be fetching a PDF.
    */
   onRetry?: (r: { attempt: number; of: number; status: number; finalUrl: string }) => void
+  /**
+   * Request options for the fetch itself, so this same classifier can front
+   * a form POST — the judicial act's own "Gerar PDF" download (see
+   * `download.ts`) — and not just a plain GET. Replayed as-is on every
+   * retry, which is what the retry ladder above is worth having: a
+   * download POST is idempotent, so re-sending it costs nothing but the
+   * request.
+   */
+  init?: RequestInit
 }
 
 /**
@@ -89,7 +98,7 @@ export async function fetchClassifiedPdf(
   let last: { status: number; finalUrl: string } | undefined
 
   for (let attempt = 0; attempt <= TRANSIENT_RETRIES; attempt++) {
-    const res = await client.request(url)
+    const res = await client.request(url, opts.init)
 
     if (res.body.subarray(0, 5).toString('latin1') === PDF_MAGIC) {
       return { kind: 'pdf', pdf: res.body, headers: res.headers, finalUrl: res.url }

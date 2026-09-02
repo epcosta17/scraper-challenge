@@ -115,16 +115,35 @@ describe('extractActText', () => {
   })
 })
 
-describe('parseActPdfForm', () => {
-  // The `ca` the "Gerar PDF" trigger carries is 112 hex — twice the length of
-  // the case's own 48-hex `ca`, and a different value again from the one in
-  // the act page's own URL. Asserted literally here: reusing either of the
-  // other two is the exact mistake this parser exists to prevent.
-  const DESPACHO_ACT_CA =
-    '5ac601efbf2b35c21ddb599c8dd6105d8338e9b70e28f9cdeda14b0ac76d9f5b5d0854e21a690a52d79606f27244dfe15e2a3aefdb490d11'
-  const SENTENCA_ACT_CA =
-    '186624e9614eb86751947c70685b740a2b40cba9f30b1169eb53e6a5e2fd9c67c3e1118dc739fd236902b4fa7f030d2df8a04e5c87a6dcbd'
+// The `ca` the "Gerar PDF" trigger carries is 112 hex — twice the length of
+// the case's own 48-hex `ca`, and a different value again from the one in the
+// act page's own URL. Asserted literally: reusing either of the other two is
+// the exact mistake the act-PDF parser exists to prevent.
+const DESPACHO_ACT_CA =
+  '5ac601efbf2b35c21ddb599c8dd6105d8338e9b70e28f9cdeda14b0ac76d9f5b5d0854e21a690a52d79606f27244dfe15e2a3aefdb490d11'
+const SENTENCA_ACT_CA =
+  '186624e9614eb86751947c70685b740a2b40cba9f30b1169eb53e6a5e2fd9c67c3e1118dc739fd236902b4fa7f030d2df8a04e5c87a6dcbd'
 
+/**
+ * An act page that serves `page` on the GET and whatever `post` decides on
+ * the "Gerar PDF" POST, logging every call so a test can assert on what
+ * actually went over the wire — one client and one jar for both, exactly as
+ * the session-bound act `ca` requires.
+ */
+function actPortal(page: string, post: (body: string) => { body: Buffer; status?: number } = () => ({ body: samplePdf })) {
+  const calls: { method: string; url: string; body: string; headers: Headers }[] = []
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    const method = init?.method ?? 'GET'
+    calls.push({ method, url: String(url), body: String(init?.body ?? ''), headers: new Headers(init?.headers) })
+    const spec = method === 'POST' ? post(String(init?.body ?? '')) : { body: Buffer.from(page, 'latin1') }
+    const r = new Response(spec.body, { status: spec.status ?? 200 })
+    Object.defineProperty(r, 'url', { value: String(url) })
+    return r
+  }) as unknown as typeof fetch
+  return { client: new HttpClient({ fetchImpl, sleep: async () => {}, rps: 0 }), calls }
+}
+
+describe('parseActPdfForm', () => {
   it('reads the download form off a real DESPACHO page', () => {
     const form = parseActPdfForm(despachoPage)
     expect(form).not.toBeNull()
@@ -171,6 +190,63 @@ describe('downloadDocument — html', () => {
     }
   })
 
+})
+
+describe('downloadDocument — the act\'s own PDF', () => {
+  it('posts the form read off the page and keeps the PDF alongside the text', async () => {
+    const { client, calls } = actPortal(despachoPage)
+    const res = await downloadDocument(client, htmlRef)
+
+    expect(res.kind).toBe('html')
+    if (res.kind !== 'html') return
+    expect(res.text).toContain('DESPACHO')
+    expect(res.pdf.kind).toBe('pdf')
+    if (res.pdf.kind !== 'pdf') return
+    expect(res.pdf.pdf.subarray(0, 5).toString()).toBe('%PDF-')
+
+    expect(calls).toHaveLength(2)
+    const sent = new URLSearchParams(calls[1]!.body)
+    expect(sent.get('j_id42')).toBe('j_id42')
+    expect(sent.get('javax.faces.ViewState')).toBe('j_id4')
+    expect(sent.get('j_id42:downloadPDF')).toBe('j_id42:downloadPDF')
+    expect(sent.get('ca')).toBe(DESPACHO_ACT_CA)
+    expect(sent.get('idProcDocBin')).toBe('11872334')
+  })
+
+  it('posts to the form\'s own action, declaring the Latin-1 charset and the act page as Referer', async () => {
+    const { client, calls } = actPortal(despachoPage)
+    await downloadDocument(client, htmlRef)
+
+    const post = calls[1]!
+    expect(post.method).toBe('POST')
+    expect(post.url).toBe(
+      'https://pjett.trf5.jus.br/pjeconsulta/ConsultaPublica/DetalheProcessoConsultaPublica/documentoSemLoginHTML.seam',
+    )
+    expect(post.headers.get('content-type')).toBe('application/x-www-form-urlencoded; charset=ISO-8859-1')
+    expect(post.headers.get('referer')).toBe(documentHtmlUrl(htmlRef.ca, htmlRef.idProcessoDoc))
+  })
+
+  it('keeps the act text when the download answers 200 with something that is not a PDF', async () => {
+    const { client } = actPortal(despachoPage, () => ({ body: Buffer.from('<html>not a pdf</html>', 'latin1') }))
+    const res = await downloadDocument(client, htmlRef)
+
+    expect(res.kind).toBe('html')
+    if (res.kind !== 'html') return
+    expect(res.text).toContain('DESPACHO')
+    expect(res.pdf.kind).toBe('failed')
+    if (res.pdf.kind === 'failed') expect(res.pdf.reason).toBeTruthy()
+  })
+
+  it('never posts at all for an act page that offers no download, and still keeps the text', async () => {
+    const { client, calls } = actPortal('<html><body><div class="folha">ato judicial</div></body></html>')
+    const res = await downloadDocument(client, htmlRef)
+
+    expect(res.kind).toBe('html')
+    if (res.kind !== 'html') return
+    expect(res.text).toBe('ato judicial')
+    expect(res.pdf.kind).toBe('none')
+    expect(calls).toHaveLength(1)
+  })
 })
 
 // A case's procedural-movement timeline links to a document through this

@@ -1,12 +1,26 @@
 import * as cheerio from 'cheerio'
 import { HttpClient, decodeLatin1 } from '../http/client.ts'
 import { fetchClassifiedPdf } from './report.ts'
+import { encodeSearchBody } from './search.ts'
 import { HOST, documentBinUrl, documentHtmlUrl } from './urls.ts'
 import type { BinaryDocumentRef, HtmlDocumentRef } from './detail.ts'
 
+/**
+ * What became of a judicial act's own PDF (see `downloadActPdf`).
+ *
+ * `'none'` and `'failed'` are deliberately two different things: a page
+ * that offers no download at all is a legitimate shape and nobody's fault,
+ * while a download that was offered and then didn't produce a PDF is a
+ * failure worth recording. Neither one may cost the act's text.
+ */
+export type ActPdfResult =
+  | { kind: 'pdf'; pdf: Buffer }
+  | { kind: 'none' }
+  | { kind: 'failed'; reason: string }
+
 export type DownloadResult =
   | { kind: 'pdf'; pdf: Buffer; fileName: string }
-  | { kind: 'html'; text: string }
+  | { kind: 'html'; text: string; pdf: ActPdfResult }
   | { kind: 'absent'; finalUrl: string }
   | { kind: 'transient'; status: number; finalUrl: string }
 
@@ -123,6 +137,59 @@ export function parseActPdfForm(html: string): ActPdfForm | null {
 }
 
 /**
+ * Downloads a judicial act as a PDF, by submitting the very form its own
+ * page carries (see `parseActPdfForm`).
+ *
+ * Runs on the same client — and so the same cookie jar — that fetched
+ * `html` from `actUrl`: the `ca` in that form is session-bound exactly like
+ * the one in the act's URL, and the server rejects it from anywhere else.
+ * That is also why the act page's own URL goes back as the `Referer`.
+ *
+ * Success is the `%PDF-` magic bytes and nothing else — the classification
+ * is `fetchClassifiedPdf`'s, the same one behind every other PDF in this
+ * scraper, rather than a second opinion written here. Anything short of a
+ * PDF comes back as `'failed'` with a reason for the failures table, never
+ * as a thrown error: the caller still has the act's text to store.
+ */
+export async function downloadActPdf(
+  client: HttpClient, actUrl: string, html: string,
+): Promise<ActPdfResult> {
+  const form = parseActPdfForm(html)
+  if (!form) return { kind: 'none' }
+
+  // JSF wants the form's own id echoed back as a field of its own, on top
+  // of the command key that says which button was pressed.
+  const body = encodeSearchBody({
+    [form.formId]: form.formId,
+    'javax.faces.ViewState': form.viewState,
+    [form.submitParam]: form.submitParam,
+    'ca': form.ca,
+    'idProcDocBin': form.idProcDocBin,
+  })
+
+  const result = await fetchClassifiedPdf(client, form.actionUrl, {
+    init: {
+      method: 'POST',
+      body,
+      // Same charset the search POST declares, and for the same reason —
+      // see `encodeFormComponent` in `search.ts`.
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=ISO-8859-1',
+        'Referer': actUrl,
+      },
+    },
+  })
+
+  if (result.kind === 'pdf') return { kind: 'pdf', pdf: result.pdf }
+  return {
+    kind: 'failed',
+    reason: result.kind === 'absent'
+      ? `the act's PDF download came back as a recognised error page: ${result.finalUrl}`
+      : `the act's PDF download came back as a non-PDF HTTP ${result.status} from ${result.finalUrl}`,
+  }
+}
+
+/**
  * Downloads one document, binary or HTML.
  *
  * Binary: classified exactly as `fetchReportPdf` classifies the summary
@@ -137,7 +204,11 @@ export function parseActPdfForm(html: string): ActPdfForm | null {
  * fetched the detail page `ref.ca` was harvested from — it is a
  * session-bound token, unlike the case's own `ca`, and will not resolve
  * under a different session. The returned text is the extracted act, not
- * the raw page — see `extractActText`. `ref.idProcessoDoc` is always a real
+ * the raw page — see `extractActText` — and it comes back with the act's
+ * own PDF beside it (see `downloadActPdf`), which costs one further request
+ * per act. Only the text is guaranteed: an act whose PDF is not on offer,
+ * or does not download, still returns its text with the PDF's absence
+ * described rather than thrown. `ref.idProcessoDoc` is always a real
  * id by the time it reaches here — a trigger with none is a timeline
  * reference, not a document, and never becomes an `HtmlDocumentRef` at all
  * (see `parseDetailPage`) — but `documentHtmlUrl` still accepts (and
@@ -158,6 +229,12 @@ export async function downloadDocument(
     return { kind: 'pdf', pdf: result.pdf, fileName }
   }
 
-  const res = await client.request(documentHtmlUrl(ref.ca, ref.idProcessoDoc))
-  return { kind: 'html', text: extractActText(decodeLatin1(res.body)) }
+  const url = documentHtmlUrl(ref.ca, ref.idProcessoDoc)
+  const res = await client.request(url)
+  const html = decodeLatin1(res.body)
+  // One extra request per act, deliberately: the act's text feeds the
+  // full-text index and its PDF is what a reader actually wants to open,
+  // and the page this GET already paid for is the only place the form
+  // behind that PDF exists.
+  return { kind: 'html', text: extractActText(html), pdf: await downloadActPdf(client, url, html) }
 }
