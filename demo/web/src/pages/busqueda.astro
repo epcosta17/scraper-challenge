@@ -662,9 +662,20 @@ const found = outcome !== null && outcome.ok ? outcome : null
       open.setAttribute('aria-expanded', 'false')
     }
 
-    open.addEventListener('click', () => { panel.hidden ? show() : hide() })
+    open.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (panel.hidden) show()
+      else hide()
+    })
 
     panel.addEventListener('click', (event) => {
+      // Stopped here rather than left to bubble, and it is not defensive
+      // tidiness: `render()` below replaces the panel's innerHTML, so by the
+      // time this click reaches the document the button that was pressed is
+      // no longer in the DOM. `field.contains()` on a detached node answers
+      // false, so the outside-click guard read every month change as a click
+      // outside and closed the calendar in the same gesture that moved it.
+      event.stopPropagation()
       const el = (event.target as HTMLElement).closest('button')
       if (!el) return
       if (el.dataset.move) {
@@ -684,7 +695,8 @@ const found = outcome !== null && outcome.ok ? outcome : null
     })
 
     // A calendar left open over the rest of the form is in the way; anywhere
-    // outside closes it, and so does Escape.
+    // outside closes it, and so does Escape. Clicks inside never arrive here:
+    // the panel's own handler stops them, for the reason spelled out there.
     document.addEventListener('click', (event) => {
       if (!panel.hidden && !field.contains(event.target as Node)) hide()
     })
