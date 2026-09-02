@@ -236,6 +236,14 @@ export interface Job {
    * 217 of 300" is the most useful thing that row can still say.
    */
   progress: { done: number; total: number | null; totalIsEstimate: boolean }
+  /**
+   * What the worker is doing right now, in the engine's own words, or null
+   * when the job is not running. Shown beside the count because on a single
+   * case the count stays at zero through most of the work — the summary PDF,
+   * the search bridge, the case file — and a row that only ever said `0` would
+   * be indistinguishable from one that had hung.
+   */
+  stage: string | null
 }
 
 export interface CaptureFailure {

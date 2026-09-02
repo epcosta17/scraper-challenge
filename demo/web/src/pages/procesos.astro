@@ -1,7 +1,7 @@
 ---
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
-import { data } from '../data/index.ts'
+import { data, runner } from '../data/index.ts'
 import type { Job, JobKind } from '../data/types.ts'
 import { isJobKind, JOB_KINDS } from '../data/sqlite/jobs.ts'
 import { clockLabel } from '../data/sqlite/labels.ts'
@@ -20,27 +20,61 @@ let flash: { kind: 'ok' | 'bad'; text: string } | null = null
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData()
+
+  // Running the queue and stopping it come first, and deliberately never look
+  // at the target fields. They share the form only because they sit under it;
+  // asking for a worker is not a kind of job, and a stop that could be refused
+  // because a radio button was wrong would be a stop you cannot rely on.
+  if (form.has('ejecutar')) {
+    const started = runner.ensureRunning()
+    return Astro.redirect(`/procesos?worker=${started.started ? 'arrancado' : 'ya'}`)
+  }
+  if (form.has('parar')) {
+    const stopped = runner.stop()
+    return Astro.redirect(`/procesos?worker=${stopped ? 'parado' : 'ninguno'}`)
+  }
+
   const rawKind = String(form.get('tipo') ?? '')
   const target = String(form.get('objetivo') ?? '')
   if (!isJobKind(rawKind)) {
     return Astro.redirect(`/procesos?error=${encodeURIComponent('Tipo de proceso desconocido.')}`)
   }
+
   const outcome = await data.enqueue(rawKind, target)
+  if (!outcome.ok) {
+    return Astro.redirect(
+      `/procesos?error=${encodeURIComponent(outcome.error)}&tipo=${rawKind}&objetivo=${encodeURIComponent(target)}`,
+    )
+  }
+  // Queueing work is what starts a worker. Nothing is scheduled and nothing
+  // runs on its own: there is a worker because somebody asked for this job.
+  const started = runner.ensureRunning()
   return Astro.redirect(
-    outcome.ok
-      ? `/procesos?encolado=${outcome.job.id}`
-      : `/procesos?error=${encodeURIComponent(outcome.error)}&tipo=${rawKind}&objetivo=${encodeURIComponent(target)}`,
+    `/procesos?encolado=${outcome.job.id}&worker=${started.started ? 'arrancado' : 'ya'}`,
   )
 }
 
 const params = Astro.url.searchParams
 const enqueued = params.get('encolado')
 const failed = params.get('error')
+const workerNote = params.get('worker')
+const WORKER_SAID: Record<string, string> = {
+  arrancado: 'Worker arrancado; está drenando la cola.',
+  ya: 'Ya había un worker corriendo; tomará este trabajo también.',
+  parado: 'Al worker se le pidió parar. Termina el trabajo que tenga en curso.',
+  ninguno: 'No hay ningún worker que esta pantalla haya arrancado.',
+}
+
 if (enqueued !== null) {
-  flash = { kind: 'ok', text: `Trabajo #${enqueued} encolado. Lo tomará el próximo worker que drene la cola.` }
+  const said = workerNote !== null ? ` ${WORKER_SAID[workerNote] ?? ''}` : ''
+  flash = { kind: 'ok', text: `Trabajo #${enqueued} encolado.${said}` }
 } else if (failed !== null) {
   flash = { kind: 'bad', text: failed }
+} else if (workerNote !== null) {
+  flash = { kind: 'ok', text: WORKER_SAID[workerNote] ?? '' }
 }
+
+const worker = runner.state()
 
 const rawKind = params.get('tipo') ?? ''
 const activeMode: JobKind = isJobKind(rawKind) ? rawKind : 'deep_case'
@@ -135,16 +169,17 @@ function progressOf(j: Job): string | null {
             <div class="job row-head" role="presentation">
               {columns.map((c) => <span>{c}</span>)}
             </div>
-            <ul>
+            <ul data-queue>
               {overview.jobs.map((j) => (
-                <li class="job job--row">
+                <li class="job job--row" data-job={j.id}>
                   <span class="job__kind mono">{j.kind}</span>
                   <span class="job__target">
                     {j.target}
+                    <span class="job__stage" data-cell="stage">{j.stage ?? ''}</span>
                     {j.error !== null && <span class="job__error">{j.error}</span>}
                   </span>
-                  <span class="job__progress mono num">{progressOf(j) ?? '—'}</span>
-                  <span class="job__attempts mono num">{formatInt(j.attempts)}</span>
+                  <span class="job__progress mono num" data-cell="progress">{progressOf(j) ?? '—'}</span>
+                  <span class="job__attempts mono num" data-cell="attempts">{formatInt(j.attempts)}</span>
                   <span class="job__times mono">
                     {clock(j.startedAt ?? j.createdAt)}
                     {j.finishedAt !== null && ` → ${clock(j.finishedAt)}`}
@@ -233,9 +268,23 @@ function progressOf(j: Job): string | null {
             Encolar proceso
           </button>
 
+          <div class="runner">
+            <span class:list={['dot', worker.running && 'dot--ok']} aria-hidden="true" />
+            <span class="runner__state" id="runner-state">
+              {worker.running ? 'Worker corriendo' : 'Sin worker'}
+            </span>
+            {worker.running ? (
+              <button class="runner__btn" type="submit" name="parar" value="1">Parar</button>
+            ) : (
+              <button class="runner__btn" type="submit" name="ejecutar" value="1">Ejecutar cola</button>
+            )}
+          </div>
+
           <p class="hint hint--lg">
-            Encolar escribe una fila en <span class="mono">jobs</span> y nada más. El ritmo, la
-            concurrencia y los reintentos son del worker que la tome, no de esta pantalla.
+            Encolar escribe una fila en <span class="mono">jobs</span> y arranca un worker si no
+            hay ninguno; si ya lo hay, tomará este trabajo también. Nada está programado: existe
+            un worker porque alguien pidió trabajo desde aquí. El ritmo, la concurrencia y los
+            reintentos son suyos, no de esta pantalla.
           </p>
         </form>
       </section>
@@ -276,7 +325,133 @@ function progressOf(j: Job): string | null {
   </div>
 </Base>
 
+<script>
+  /**
+   * Keeps the queue table honest while a worker is working.
+   *
+   * A capture takes minutes and reports as it goes; a server-rendered page
+   * would show none of that until somebody reloaded, which is exactly the
+   * moment this screen is worth looking at. So the page is still rendered on
+   * the server and this refreshes only the cells that move.
+   *
+   * It polls while anything is running or queued and stops the moment the
+   * queue goes quiet — an idle screen makes no requests. When a job finishes
+   * it reloads once, because the totals and the failure list around the table
+   * are server-rendered and would otherwise disagree with the rows.
+   */
+  const LABEL: Record<string, string> = {
+    running: 'en curso', queued: 'en cola', done: 'hecho', failed: 'falló',
+  }
+
+  const table = document.querySelector('[data-queue]')
+  if (table) {
+    const runnerState = document.getElementById('runner-state')
+    let settled = new Set<number>()
+    let primed = false
+
+    const cell = (row: Element, name: string): HTMLElement | null =>
+      row.querySelector<HTMLElement>(`[data-cell="${name}"]`)
+
+    const tick = async (): Promise<void> => {
+      let payload: any
+      try {
+        const response = await fetch('/cola.json', { headers: { accept: 'application/json' } })
+        if (!response.ok) return
+        payload = await response.json()
+      } catch {
+        return
+      }
+
+      if (runnerState) {
+        runnerState.textContent = payload.worker?.running ? 'Worker corriendo' : 'Sin worker'
+      }
+
+      const finished = new Set<number>()
+      for (const job of payload.jobs ?? []) {
+        if (job.state === 'done' || job.state === 'failed') finished.add(job.id)
+
+        const row = table.querySelector(`[data-job="${job.id}"]`)
+        if (!row) continue
+
+        const { done, total, totalIsEstimate } = job.progress ?? {}
+        const progress = cell(row, 'progress')
+        if (progress) {
+          progress.textContent =
+            job.state === 'queued' || typeof done !== 'number'
+              ? '—'
+              : total === null
+                ? (done === 0 ? '—' : String(done))
+                : `${done} / ${totalIsEstimate ? '~' : ''}${total}`
+        }
+        const attempts = cell(row, 'attempts')
+        if (attempts) attempts.textContent = String(job.attempts)
+
+        // The line that carries a single case through the minutes before its
+        // first document exists.
+        const stage = cell(row, 'stage')
+        if (stage) stage.textContent = job.state === 'running' ? (job.stage ?? '') : ''
+
+        const state = row.querySelector<HTMLElement>('.job__state')
+        if (state) {
+          state.dataset.state = job.state
+          const dot = state.querySelector('.dot')
+          dot?.classList.toggle('dot--ok', job.state === 'running')
+          dot?.classList.toggle('dot--bad', job.state === 'failed')
+          const label = state.lastChild
+          if (label) label.textContent = LABEL[job.state] ?? job.state
+        }
+      }
+
+      // A job that settled while this page was open changes the counters and
+      // the failure list too, and those are rendered on the server. One reload
+      // is cheaper and more honest than mirroring every one of them here.
+      if (primed) {
+        for (const id of finished) {
+          if (!settled.has(id)) { location.reload(); return }
+        }
+      }
+      settled = finished
+      primed = true
+
+      if (payload.active) setTimeout(tick, 1500)
+    }
+
+    void tick()
+  }
+</script>
+
 <style>
+  .job__stage {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .job__stage:empty { display: none; }
+
+  /* The worker's own state, under the queue form: a light, not a control panel. */
+  .runner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .runner__state { flex: 1 1 auto; }
+  .runner__btn {
+    padding: 3px 9px;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .runner__btn:hover { border-color: var(--line-strong); color: var(--ink); }
+
   .head {
     display: flex;
     flex-direction: column;
