@@ -63,6 +63,7 @@ import type {
 import { declaredMovements, declaredParties } from './declared.ts'
 import { explainFailure } from './failure-text.ts'
 import { agoLabel, captureLabel, courtDate, courtTimestamp, startOfTodayStored } from './labels.ts'
+import { actPage } from './act-page.ts'
 import { describeTarget, parseTarget } from './jobs.ts'
 import { HIGHLIGHT_END, HIGHLIGHT_START, toSegments } from './snippet.ts'
 
@@ -462,11 +463,20 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       if (doc.textContent !== null) {
         return {
           filename: documentFilename(caseNumber, doc, 'txt'),
-          // The stored HTML document is the judicial act's extracted text, not
-          // a page — see `extractActText`. Serving it as `text/html` would
-          // render the tribunal's prose as broken markup.
-          contentType: 'text/plain; charset=utf-8',
-          body: doc.textContent,
+          // Wrapped in a page of our own rather than served as `text/plain`.
+          //
+          // What is stored is the act's extracted text, not the portal's
+          // markup — the original styling was not captured and cannot be
+          // reproduced. But `text/plain` in a frame is rendered by the
+          // browser in monospace, at the viewer's own colours, with no
+          // measure and no paragraphs: a judgment shown as a wall of terminal
+          // output. This is the same text given the typography a legal
+          // document is read in.
+          //
+          // Escaped, not trusted: this is text that came off a court's server
+          // and it is about to be put inside a page.
+          contentType: 'text/html; charset=utf-8',
+          body: actPage(doc.label, caseNumber, doc.textContent),
         }
       }
       return null

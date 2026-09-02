@@ -516,9 +516,15 @@ const movements = caseFile
             : ''
 
         if (job.state === 'done') {
-          text.textContent = 'Recaptura terminada. Recarga para ver lo nuevo.'
+          // The page around this banner is server-rendered: the documents, the
+          // parties, the capture counts. Telling somebody to reload in order
+          // to see what they just asked for is asking them to do the last
+          // step by hand, so the page fetches itself instead.
+          text.textContent = 'Recaptura terminada, actualizando…'
           banner.classList.add('queued--done')
           banner.querySelector('.dot')?.classList.remove('dot--ok')
+          location.reload()
+          return
         } else if (job.state === 'failed') {
           text.textContent = `La recaptura falló: ${job.error ?? 'sin motivo registrado'}`
           banner.classList.add('queued--bad')

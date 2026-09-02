@@ -377,11 +377,17 @@ describe('serving a document', () => {
     expect(Buffer.from(file.body as Uint8Array).toString('utf8')).toContain('%PDF-')
   })
 
-  it('serves an HTML document as the extracted act it actually is', async () => {
+  it('serves an act with no PDF as a page it can be read in', async () => {
+    // The stored text is the act, not the portal's markup — the original
+    // styling was never captured. What this asserts is the narrower thing
+    // that was wrong: `text/plain` in a frame is rendered in monospace, at
+    // the viewer's own colours, with no measure and no paragraphs, which
+    // turns a judgment into a wall of terminal output.
     const file = (await source().openDocument(12102220))!
-    expect(file.contentType).toBe('text/plain; charset=utf-8')
+    expect(file.contentType).toBe('text/html; charset=utf-8')
     expect(file.filename).toBe(`${CASE_FULL} - Sentença - 11-07-2026.txt`)
     expect(file.body).toContain('julgo extinto')
+    expect(file.body).toContain('<p>')
   })
 
   it('has nothing for an id that is not a document', async () => {
