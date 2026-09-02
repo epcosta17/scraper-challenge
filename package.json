@@ -3,14 +3,20 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "workspaces": ["packages/*", "demo/*"],
-  "engines": { "node": ">=22" },
+  "workspaces": [
+    "packages/*",
+    "demo/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/scraper",
+    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/scraper && tsc --noEmit -p demo/worker",
     "test": "vitest run",
     "test:watch": "vitest",
     "scraper": "node --experimental-strip-types packages/scraper/src/cli.ts",
-    "check:runtime": "node --experimental-strip-types -e \"import('./packages/core/src/index.ts').then(()=>console.log('runtime import OK'))\""
+    "check:runtime": "node --experimental-strip-types -e \"Promise.all([import('./packages/core/src/index.ts'),import('./packages/scraper/src/index.ts'),import('./demo/worker/src/index.ts')]).then(()=>console.log('runtime import OK'))\"",
+    "worker": "node --experimental-strip-types demo/worker/src/cli.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

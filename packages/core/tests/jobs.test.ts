@@ -518,3 +518,19 @@ describe('finishing a job drops its lease', () => {
     expect(getJob(db, id)!.heartbeatAt).toBeNull()
   })
 })
+
+describe('heartbeatJob identifies the attempt, not just the job', () => {
+  it('refuses to renew a lease on an attempt that is no longer this worker’s', () => {
+    const id = enqueueJob(db, 'crawl').id
+    const mine = claimNextJob(db)!
+    // The lease goes cold, a reclaimer frees the job, and somebody else
+    // takes it. The row is `running` again — but not for us.
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-1 hour') WHERE id = ?").run(id)
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(1)
+    const theirs = claimNextJob(db)!
+    expect(theirs.attempts).toBe(mine.attempts + 1)
+
+    expect(heartbeatJob(db, id, mine.attempts)).toBe(false)
+    expect(heartbeatJob(db, id, theirs.attempts)).toBe(true)
+  })
+})

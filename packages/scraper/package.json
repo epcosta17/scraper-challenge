@@ -2,6 +2,12 @@
   "name": "@pje/scraper",
   "version": "1.0.0",
   "type": "module",
-  "main": "./src/cli.ts",
-  "dependencies": { "@pje/core": "*" }
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@pje/core": "*"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli/run.ts"
+  }
 }

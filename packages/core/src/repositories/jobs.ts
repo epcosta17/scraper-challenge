@@ -273,16 +273,27 @@ export function updateJobProgress(db: Db, id: number, p: JobProgressUpdate): voi
 
 /**
  * Refreshes the lease on a job this worker believes it is holding, and
- * reports whether it still is. `false` means the row is no longer a running
- * job — reclaimed by `reclaimStaleJobs` after this worker went quiet for too
- * long, or already finished — and a worker that sees it must stop treating
- * the job as its own rather than later marking somebody else's work done.
+ * reports whether it still is. `false` means the row is no longer this
+ * worker's running job — reclaimed by `reclaimStaleJobs` after it went quiet
+ * for too long, or already finished — and a worker that sees it must stop
+ * treating the job as its own rather than later marking somebody else's work
+ * done.
+ *
+ * `expectedAttempts` is what closes the gap that `status = 'running'` alone
+ * leaves: a job reclaimed from this worker and then claimed by another is
+ * `running` again, so the status test would say yes to a row that now
+ * belongs to someone else. Every claim increments `attempts`, so the count
+ * this worker was handed at claim time is an identifier for *its* attempt,
+ * and no new column is needed to tell two attempts apart. Omitted, this
+ * degrades to the status test alone — right for a caller that only wants to
+ * know whether the job is still in flight at all.
  */
-export function heartbeatJob(db: Db, id: number): boolean {
+export function heartbeatJob(db: Db, id: number, expectedAttempts?: number): boolean {
   const result = db.prepare(`
     UPDATE jobs SET heartbeat_at = datetime('now')
-     WHERE id = ? AND status = 'running'
-  `).run(id)
+     WHERE id = @id AND status = 'running'
+       AND (@attempts IS NULL OR attempts = @attempts)
+  `).run({ id, attempts: expectedAttempts ?? null })
   return result.changes > 0
 }
 
