@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, access, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /** Swappable so PDFs can move to Cloud Storage without touching callers. */
@@ -33,6 +33,20 @@ export class FsBlobStore implements BlobStore {
 
   async get(key: string): Promise<Buffer> {
     return readFile(this.path(key))
+  }
+
+  /**
+   * The stored object's size in bytes, or null when there is nothing at that
+   * key. Read-only, and through the same key check as every other method, so a
+   * caller totting up how much of a case is on disk never has to reach past
+   * the store to `stat` a path it built itself.
+   */
+  async size(key: string): Promise<number | null> {
+    try {
+      return (await stat(this.path(key))).size
+    } catch {
+      return null
+    }
   }
 
   async exists(key: string): Promise<boolean> {
