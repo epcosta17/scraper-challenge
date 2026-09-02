@@ -78,14 +78,22 @@ const movements = caseFile
             </div>
 
             <div class="case-head__actions">
-              <button class="btn" type="button" disabled>
+              <a
+                class="btn"
+                href={`/procesos?tipo=refresh_case&objetivo=${caseFile.number}`}
+                title="Prepara un trabajo de recaptura en la cola; lo ejecuta un worker, no esta pantalla"
+              >
                 <Icon name="refresh-cw" size={15} />
                 Refrescar expediente
-              </button>
-              <button class="btn btn--ghost" type="button" disabled>
+              </a>
+              <a
+                class="btn btn--ghost"
+                href={`/expedientes/${caseFile.number}/resumen.pdf`}
+                title="El PDF que el portal genera del proceso entero"
+              >
                 <Icon name="download" size={15} />
-                Descargar todo
-              </button>
+                Resumen del proceso
+              </a>
             </div>
           </div>
         </section>
@@ -228,9 +236,27 @@ const movements = caseFile
               {
                 partial && (
                   <p class="capture__foot">
-                    Las cifras de la izquierda son lo que el portal declara; las de la derecha, lo
-                    que se pudo leer. Mientras no coincidan, el expediente está incompleto.
+                    El primer número es lo que se pudo leer; el segundo, lo que el portal declara.
+                    Mientras no coincidan, el expediente está incompleto.
                   </p>
+                )
+              }
+
+              {
+                caseFile.capture.failures.length > 0 && (
+                  <ul class="capture__failures">
+                    {caseFile.capture.failures.map((f) => (
+                      <li class="capture__failure">
+                        <span class="capture__failure-top">
+                          <span class="mono">{f.kind}</span>
+                          <span class="mono capture__failure-when">
+                            {f.attempts} {f.attempts === 1 ? 'intento' : 'intentos'} · {f.lastAttemptAt}
+                          </span>
+                        </span>
+                        <span class="capture__failure-text" title={f.raw}>{f.error}</span>
+                      </li>
+                    ))}
+                  </ul>
                 )
               }
             </section>
@@ -259,9 +285,33 @@ const movements = caseFile
                       <li class="doc">
                         <Icon name={d.format === 'HTML' ? 'file-code' : 'file-text'} size={15} />
                         <span class="doc__date mono">{d.docDate ?? '—'}</span>
-                        <span class="doc__label">{d.label}</span>
+                        <span class="doc__label">
+                          {d.label}
+                          {d.sizeBytes !== null && (
+                            <span class="doc__size mono"> · {formatBytes(d.sizeBytes)}</span>
+                          )}
+                        </span>
                         <span class="doc__fmt mono">{d.format}</span>
-                        <Icon name="eye" size={15} />
+                        <span class="doc__actions">
+                          <a
+                            class="doc__action"
+                            href={`/documentos/${d.id}`}
+                            target="_blank"
+                            rel="noopener"
+                            aria-label={`Previsualizar ${d.label}`}
+                            title="Previsualizar"
+                          >
+                            <Icon name="eye" size={15} />
+                          </a>
+                          <a
+                            class="doc__action"
+                            href={`/documentos/${d.id}?descargar`}
+                            aria-label={`Descargar ${d.label}`}
+                            title="Descargar"
+                          >
+                            <Icon name="download" size={15} />
+                          </a>
+                        </span>
                       </li>
                     ))}
                   </ul>
@@ -449,6 +499,28 @@ const movements = caseFile
     color: var(--ink-3);
   }
   .doc__date { font-size: 12px; }
+  .doc__size { color: var(--ink-3); font-size: 11px; }
+  .doc__actions { display: inline-flex; align-items: center; gap: 10px; }
+  .doc__action { display: inline-flex; color: var(--ink-3); }
+  .doc__action:hover { color: var(--ink); }
+
+  .capture__failures { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+  .capture__failure {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .capture__failure-top { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .capture__failure-top .mono { font-size: 11px; color: var(--ink-2); }
+  .capture__failure-when { color: var(--ink-3) !important; }
+  .capture__failure-text {
+    font-size: 12px;
+    font-weight: 300;
+    line-height: 1.45;
+    color: var(--ink-2);
+  }
   .doc__label { font-size: 14px; font-weight: 300; color: var(--ink); overflow-wrap: anywhere; }
   .doc__fmt { font-size: 11px; }
 

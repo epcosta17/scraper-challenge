@@ -4,7 +4,16 @@ import Icon from '../components/Icon.astro'
 import { data } from '../data/index.ts'
 import { formatInt, plural } from '../lib/format.ts'
 
-const conversation = await data.conversation()
+/**
+ * The same full-text index as `/busqueda`, asked in prose.
+ *
+ * There is no language model behind this screen and the answer never pretends
+ * otherwise: every sentence it prints is a count over the rows that matched,
+ * and the passages on the right are the captured text itself, cut by FTS5
+ * around the terms of the question.
+ */
+const question = (Astro.url.searchParams.get('q') ?? '').trim()
+const conversation = await data.conversation(question === '' ? null : question)
 ---
 
 <Base
@@ -54,17 +63,17 @@ const conversation = await data.conversation()
             class="compose__input"
             type="text"
             name="q"
-            disabled
+            value={question}
             placeholder="Pregunta sobre el acervo…"
             aria-label="Pregunta sobre el acervo"
           />
-          <button class="btn btn--send" type="submit" disabled aria-label="Enviar pregunta">
+          <button class="btn btn--send" type="submit" aria-label="Enviar pregunta">
             <Icon name="arrow-up" size={14} />
           </button>
         </div>
         <p class="compose__note">
-          Las respuestas citan documentos del acervo. El criterio y la aprobación siguen siendo
-          tuyos.
+          Las respuestas citan documentos del acervo, y solo del acervo. El criterio y la aprobación
+          siguen siendo tuyos.
         </p>
       </form>
     </div>
@@ -74,6 +83,15 @@ const conversation = await data.conversation()
         <h2 class="section-head__title">FUENTES CITADAS</h2>
         <p class="section-head__aside">{plural(conversation.sourceCount, 'expediente', 'expedientes')}</p>
       </header>
+
+      {
+        conversation.sources.length === 0 && (
+          <p class="sources__foot">
+            Las fuentes aparecen aquí en cuanto haya una pregunta: son los expedientes cuyo texto
+            contiene los términos que escribas.
+          </p>
+        )
+      }
 
       {
         conversation.sources.map((s) => (
@@ -88,10 +106,16 @@ const conversation = await data.conversation()
         ))
       }
 
-      <p class="sources__foot">
-        {formatInt(conversation.sourceCount - conversation.sources.length)} expedientes más sustentan
-        esta respuesta.
-      </p>
+      {
+        conversation.sourceCount > conversation.sources.length && (
+          <p class="sources__foot">
+            {formatInt(conversation.sourceCount - conversation.sources.length)}{' '}
+            {conversation.sourceCount - conversation.sources.length === 1
+              ? 'expediente más coincide'
+              : 'expedientes más coinciden'} con la pregunta.
+          </p>
+        )
+      }
     </aside>
   </div>
 </Base>

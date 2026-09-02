@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "@astrojs/node": "^11.1.5",
-    "astro": "^7.2.10"
+    "@pje/core": "*",
+    "astro": "^7.2.10",
+    "better-sqlite3": "^11.7.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

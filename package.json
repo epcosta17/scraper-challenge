@@ -11,7 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/scraper && tsc --noEmit -p demo/worker",
+    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/scraper && tsc --noEmit -p demo/worker && tsc --noEmit -p demo/web/tsconfig.check.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "scraper": "node --experimental-strip-types packages/scraper/src/cli.ts",

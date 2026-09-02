@@ -47,31 +47,36 @@ const columns = [
     <p class="eyebrow">01 — ACERVO</p>
     <h1 class="page-title">Expedientes</h1>
     <p class="lede">
-      {formatInt(stats.caseCount)} procesos del Tribunal Regional Federal da 5ª Região, con sus
-      partes, movimentações y documentos.
+      {formatInt(stats.caseCount)} {stats.caseCount === 1 ? 'proceso' : 'procesos'} del Tribunal
+      Regional Federal da 5ª Região, con sus partes, movimentações y documentos.
     </p>
   </section>
 
-  <div class="toolbar gutter">
+  <form class="toolbar gutter" method="get" action="/busqueda">
     <div class="toolbar__search">
       <Icon name="search" size={16} />
       <input
         class="toolbar__input"
         type="search"
-        disabled
+        name="q"
         placeholder="Buscar por número, parte, CPF/CNPJ o texto del documento"
-        aria-label="Buscar en el acervo (disponible al conectar la base)"
+        aria-label="Buscar en el acervo"
       />
     </div>
     {
       filters.map((f) => (
-        <button class="toolbar__filter" type="button" disabled>
+        <button
+          class="toolbar__filter"
+          type="button"
+          disabled
+          title="Sin implementar: el acervo se filtra hoy por la búsqueda de texto"
+        >
           <span>{f}</span>
           <Icon name="chevron-down" size={14} />
         </button>
       ))
     }
-  </div>
+  </form>
 
   <div class="table gutter">
     <div class="table__head row-head" role="presentation">
@@ -104,8 +109,12 @@ const columns = [
     {
       page.items.length === 0 && (
         <p class="table__empty">
-          Esta maqueta trae solo la primera página del acervo como datos de ejemplo.{' '}
-          <a class="table__empty-link" href="/">Volver a la página 1</a>.
+          {page.total === 0
+            ? 'Todavía no hay ningún expediente capturado. Encola una captura desde Procesos, o llénala con el scraper.'
+            : 'Esta página del acervo no tiene filas.'}{' '}
+          <a class="table__empty-link" href={page.total === 0 ? '/procesos' : '/'}>
+            {page.total === 0 ? 'Ir a Procesos' : 'Volver a la página 1'}
+          </a>.
         </p>
       )
     }
@@ -158,7 +167,9 @@ const columns = [
       <p class="stat__label">documentos descargados</p>
     </div>
     <div class="stat">
-      <p class="stat__value num">{formatPercent(stats.coveragePct)}</p>
+      <p class="stat__value num" title="Ids capturados o descartados, entre el primer y el último id del acervo">
+        {formatPercent(stats.coveragePct)}
+      </p>
       <p class="stat__label">cobertura del acervo</p>
     </div>
     <div class="stat">

@@ -12,4 +12,10 @@ export default defineConfig({
   // Several rows here are built from inline spans separated by a single space.
   compressHTML: true,
   devToolbar: { enabled: false },
+  vite: {
+    // `better-sqlite3` is a native addon: bundling it would leave Vite trying
+    // to resolve a `.node` binary as JavaScript. Marking it external keeps it
+    // a plain `require` at runtime, in both `astro dev` and the built server.
+    ssr: { external: ["better-sqlite3"] },
+  },
 })

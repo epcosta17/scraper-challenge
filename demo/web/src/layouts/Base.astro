@@ -1,5 +1,6 @@
 ---
 import Nav from '../components/Nav.astro'
+import ArchiveNotice from '../components/ArchiveNotice.astro'
 import '../styles/app.css'
 
 interface Props {
@@ -29,6 +30,7 @@ const { title, description, current = null } = Astro.props
   <body>
     <div class="page">
       <Nav current={current} />
+      <ArchiveNotice />
       <main>
         <slot />
       </main>

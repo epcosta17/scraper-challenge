@@ -7,7 +7,8 @@ interface Props {
 }
 
 const { current = null } = Astro.props
-const stats = await data.archiveStats()
+const [stats, status] = await Promise.all([data.archiveStats(), data.status()])
+const ready = status.kind === 'ready'
 
 const links = [
   { key: 'expedientes', href: '/', label: 'Expedientes' },
@@ -34,10 +35,12 @@ const links = [
     <a
       class="status-pill"
       href="/procesos"
-      title="Estado de la captura — abre los procesos en curso"
+      title={ready
+        ? 'Estado de la captura — abre los procesos en curso'
+        : 'No hay acervo que leer — abre los procesos en curso'}
     >
-      <span class="dot dot--ok"></span>
-      <span>Sincronizado {stats.lastSyncLabel}</span>
+      <span class:list={['dot', ready ? 'dot--ok' : 'dot--bad']}></span>
+      <span>{ready ? `Sincronizado ${stats.lastSyncLabel}` : 'Sin acervo'}</span>
     </a>
   </nav>
 </header>

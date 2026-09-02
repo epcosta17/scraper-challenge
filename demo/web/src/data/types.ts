@@ -44,9 +44,13 @@ export interface Party {
 }
 
 export interface CaseDocument {
+  /** `id_processo_documento` — the portal's own id, and the key of `/documentos/:id`. */
+  id: number
   label: string
   docDate: string | null
   format: 'PDF' | 'HTML'
+  /** Bytes on disk for a PDF; the stored act's own length for an HTML document. */
+  sizeBytes: number | null
 }
 
 /** One row of the acervo table. */
@@ -76,6 +80,13 @@ export interface CaptureState {
   lastCaptureAt: string | null
   /** HTTP requests the last capture of this case cost. */
   requestCount: number | null
+  /**
+   * The still-open `failures` rows filed against this case. A truncated party
+   * list or a document that never came down is recorded there, in the
+   * scraper's own words, and this is what puts those words on the screen
+   * instead of leaving a silent gap between two numbers.
+   */
+  failures: CaptureFailure[]
 }
 
 export interface CaseDetail {
@@ -102,76 +113,135 @@ export interface ArchiveStats {
   lastSyncLabel: string
 }
 
-// ── Portal search ───────────────────────────────────────────────────────────
+// ── Is there an acervo at all ───────────────────────────────────────────────
 
-export interface PortalQuery {
-  caseNumber: string
-  autuacaoFrom: string
-  autuacaoTo: string
-  className: string
-  partyName: string
-  lawyerName: string
-  documentKind: 'cpf' | 'cnpj'
-  documentNumber: string
-  oabNumber: string
-  oabUf: string
-  referenceNumber: string
+/**
+ * Whether there is anything behind the screens, and if not, exactly why.
+ *
+ * A web app pointed at a database that was never created, or at one no run has
+ * filled yet, must say so. Rendering "0 expedientes" for a missing file is the
+ * one answer that is indistinguishable from an empty court.
+ */
+export type ArchiveStatus =
+  | { kind: 'ready'; databasePath: string; blobRoot: string }
+  | { kind: 'missing'; databasePath: string; blobRoot: string }
+  | { kind: 'empty'; databasePath: string; blobRoot: string }
+  | { kind: 'unreadable'; databasePath: string; blobRoot: string; error: string }
+
+// ── Full-text search over the acervo ────────────────────────────────────────
+
+/**
+ * The portal never answers a query with more than this, and never offers a
+ * page 2 — the cut happens in its own server-side query, so no parameter, page
+ * or sort order gets past it. Still true, and still the reason this screen
+ * searches the captured acervo instead of the portal: the crawl is what buys
+ * coverage the public form cannot give.
+ */
+export const PORTAL_ROW_LIMIT = 30
+
+/** A run of snippet text, `hit` on the part the query matched. */
+export interface SnippetSegment {
+  text: string
+  hit: boolean
 }
 
-export interface PortalHit {
+export interface SearchSnippet {
+  /** The document the fragment came out of. */
+  label: string
+  documentId: number
+  segments: SnippetSegment[]
+}
+
+/** Which index a case turned up in; a hit can come from more than one. */
+export type SearchSource = 'case' | 'party' | 'document'
+
+export interface SearchHit {
   number: string
   className: string
-  /** Whether this case is already in our acervo. */
-  inArchive: boolean
+  organ: string | null
+  distributedAt: string | null
+  matchedIn: SearchSource[]
+  snippet: SearchSnippet | null
 }
 
-export interface PortalSearchResult {
-  hits: PortalHit[]
-  /**
-   * Rows the portal will answer with, at most. The cut happens in the server's
-   * own query, so no parameter, page or sort order gets past it.
-   */
-  rowLimit: number
-  /** The portal returned a full page: there are more results we cannot see. */
-  capped: boolean
+export interface SearchResult {
+  /** The query exactly as it was typed. */
+  query: string
+  /** What it was translated to before reaching FTS5 — shown so a surprising result is explainable. */
+  ftsQuery: string | null
+  hits: SearchHit[]
+  /** Matching cases in total, not just on this page. */
+  total: number
+  page: number
+  pageSize: number
+  pageCount: number
   elapsedMs: number
+  /** Why the query could not run at all: it had no searchable term in it. */
+  error: string | null
 }
 
 // ── Capture processes ───────────────────────────────────────────────────────
 
-export type JobKind = 'crawl' | 'deep' | 'discover' | 'daily' | 'backfill'
+/**
+ * The job types the queue actually carries — `JobType` in `@pje/core`, not a
+ * parallel vocabulary. The screen offers what a worker can be asked for and
+ * nothing else.
+ */
+export type JobKind = 'discover' | 'refresh_case' | 'deep_case' | 'backfill'
+
+/** `pending` is called `queued` here, and only here: it is the word the screen uses. */
 export type JobState = 'running' | 'queued' | 'done' | 'failed'
 
+/**
+ * One row of the queue.
+ *
+ * There is deliberately no progress field. The queue records what a job *is*
+ * and what has happened to it — how many attempts it has cost, when the
+ * current one started, when it ended, why it failed — and nothing yet writes
+ * "217 of 300" anywhere, so nothing here pretends to know it.
+ */
 export interface Job {
-  id: string
+  id: number
   kind: JobKind
+  /** The payload, read back as the words a person typed to enqueue it. */
   target: string
-  done: number | null
-  /** null when the run has no known end — a discover walking the watermark. */
-  total: number | null
-  /** The total is an estimate, not a promise. */
-  totalIsEstimate: boolean
   state: JobState
+  attempts: number
+  createdAt: string
+  /** When the *current* attempt started; null while queued. */
+  startedAt: string | null
+  /** Set only on a terminal outcome. */
+  finishedAt: string | null
+  /** Why the last attempt failed; survives into the retry, so it stays visible. */
+  error: string | null
 }
 
 export interface CaptureFailure {
   kind: string
   ref: string
+  /** In Spanish where the failure is one the interface can explain; the scraper's own words otherwise. */
   error: string
+  /** Always the scraper's own words, so nothing is lost behind the translation. */
+  raw: string
+  attempts: number
+  lastAttemptAt: string
 }
 
 export interface CaptureOverview {
   runningJobs: number
+  queuedJobs: number
   casesToday: number
   documentsToday: number
   openFailures: number
-  requestsPerSecond: number
   updatedAgoLabel: string
   jobs: Job[]
   failures: CaptureFailure[]
-  /** Requests a single deep capture costs, on average. */
-  requestsPerCase: number
 }
+
+/** What came back from asking the queue to take a new job. */
+export type EnqueueOutcome =
+  | { ok: true; job: Job }
+  | { ok: false; error: string }
 
 // ── Chat ────────────────────────────────────────────────────────────────────
 

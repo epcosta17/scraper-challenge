@@ -2,8 +2,49 @@
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
 import { data } from '../data/index.ts'
-import type { Job } from '../data/types.ts'
-import { formatInt, formatRate } from '../lib/format.ts'
+import type { Job, JobKind } from '../data/types.ts'
+import { isJobKind, JOB_KINDS } from '../data/sqlite/jobs.ts'
+import { clockLabel } from '../data/sqlite/labels.ts'
+import { formatInt } from '../lib/format.ts'
+
+/**
+ * The queue screen. It enqueues and it reads; it never runs a capture.
+ *
+ * A POST here inserts one row into `jobs` and redirects — an external worker
+ * is what claims it, does the HTTP and writes the result back. That is why
+ * nothing on this page has a progress bar: the queue records what a job *is*
+ * and what has happened to it (attempts, when the current attempt started,
+ * when it ended, why it failed) and no column yet says how far along it is.
+ */
+let flash: { kind: 'ok' | 'bad'; text: string } | null = null
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const rawKind = String(form.get('tipo') ?? '')
+  const target = String(form.get('objetivo') ?? '')
+  if (!isJobKind(rawKind)) {
+    return Astro.redirect(`/procesos?error=${encodeURIComponent('Tipo de proceso desconocido.')}`)
+  }
+  const outcome = await data.enqueue(rawKind, target)
+  return Astro.redirect(
+    outcome.ok
+      ? `/procesos?encolado=${outcome.job.id}`
+      : `/procesos?error=${encodeURIComponent(outcome.error)}&tipo=${rawKind}&objetivo=${encodeURIComponent(target)}`,
+  )
+}
+
+const params = Astro.url.searchParams
+const enqueued = params.get('encolado')
+const failed = params.get('error')
+if (enqueued !== null) {
+  flash = { kind: 'ok', text: `Trabajo #${enqueued} encolado. Lo tomará el próximo worker que drene la cola.` }
+} else if (failed !== null) {
+  flash = { kind: 'bad', text: failed }
+}
+
+const rawKind = params.get('tipo') ?? ''
+const activeMode: JobKind = isJobKind(rawKind) ? rawKind : 'deep_case'
+const prefill = params.get('objetivo') ?? ''
 
 const overview = await data.captureOverview()
 
@@ -14,34 +55,38 @@ const STATE_LABEL: Record<Job['state'], string> = {
   failed: 'fallido',
 }
 
-const progress = (j: Job): string => {
-  if (j.done === null) return '—'
-  if (j.total === null) return formatInt(j.done)
-  return `${formatInt(j.done)} / ${j.totalIsEstimate ? '~' : ''}${formatInt(j.total)}`
+/**
+ * What each job type asks a worker for, and what its objetivo has to be. All
+ * four are listed at once rather than swapped as the selection changes: the
+ * segmented control is four radio inputs and no client script, so a hint that
+ * followed the selection would be a lie until the form round-tripped.
+ */
+const KIND_HINT: Record<JobKind, string> = {
+  deep_case: 'un expediente entero (nº o id interno)',
+  refresh_case: 'relee uno ya capturado (nº o id interno)',
+  backfill: 'repite un rango de ids: 130100–130400',
+  discover: 'busca ids nuevos; vacío sigue la marca de agua',
 }
 
-/** The estimate the panel prints under the launch button. */
-const SAMPLE_BATCH = 300
-const roundedRate = Math.max(1, Math.round(overview.requestsPerSecond))
-const sampleMinutes = Math.floor(
-  (SAMPLE_BATCH * overview.requestsPerCase) / roundedRate / 60
-)
+const TARGET_PLACEHOLDER = '0800120-05.2024.4.05.8306  ·  130105  ·  130100–130400'
+
+/** The stored column is UTC; the queue prints it on the clock of whoever is reading. */
+const clock = clockLabel
 
 const kpis = [
   { value: formatInt(overview.runningJobs), label: 'procesos en curso', tone: '' },
+  { value: formatInt(overview.queuedJobs), label: 'en cola', tone: '' },
   { value: formatInt(overview.casesToday), label: 'casos hoy', tone: '' },
   { value: formatInt(overview.documentsToday), label: 'documentos hoy', tone: '' },
-  { value: formatInt(overview.openFailures), label: 'fallos sin resolver', tone: 'bad' },
-  { value: formatRate(overview.requestsPerSecond), label: 'ritmo actual', tone: 'muted' },
+  { value: formatInt(overview.openFailures), label: 'fallos sin resolver', tone: overview.openFailures > 0 ? 'bad' : 'muted' },
 ]
 
-const modes = ['crawl', 'deep', 'daily'] as const
-const activeMode = 'deep'
+const columns = ['TIPO', 'OBJETIVO', 'INTENTOS', 'TIEMPOS', 'ESTADO']
 ---
 
 <Base
   title="Procesos"
-  description="Estado de la captura: cola de trabajos, ritmo y fallos sin resolver."
+  description="Estado de la captura: cola de trabajos, intentos, tiempos y fallos sin resolver."
 >
   <section class="head gutter">
     <p class="eyebrow">06 — PROCESOS</p>
@@ -63,71 +108,121 @@ const activeMode = 'deep'
     <div class="split__main queue">
       <header class="section-head">
         <h2 class="section-head__title">COLA DE TRABAJOS</h2>
-        <p class="section-head__aside">actualizado {overview.updatedAgoLabel}</p>
+        <p class="section-head__aside">última captura {overview.updatedAgoLabel}</p>
       </header>
 
-      <ul>
-        {
-          overview.jobs.map((j) => (
-            <li class="job">
-              <span class="job__kind mono">{j.kind}</span>
-              <span class="job__target">{j.target}</span>
-              <span class="job__progress mono num">{progress(j)}</span>
-              <span class="job__state" data-state={j.state}>
-                <span class:list={['dot', j.state === 'running' && 'dot--ok', j.state === 'failed' && 'dot--bad']} />
-                {STATE_LABEL[j.state]}
-              </span>
-            </li>
-          ))
-        }
-      </ul>
+      {
+        overview.jobs.length === 0 ? (
+          <p class="empty">
+            La cola está vacía. Encola un proceso a la derecha: esta pantalla solo lo apunta, y un
+            worker externo es quien lo ejecuta.
+          </p>
+        ) : (
+          <>
+            <div class="job row-head" role="presentation">
+              {columns.map((c) => <span>{c}</span>)}
+            </div>
+            <ul>
+              {overview.jobs.map((j) => (
+                <li class="job job--row">
+                  <span class="job__kind mono">{j.kind}</span>
+                  <span class="job__target">
+                    {j.target}
+                    {j.error !== null && <span class="job__error">{j.error}</span>}
+                  </span>
+                  <span class="job__attempts mono num">{formatInt(j.attempts)}</span>
+                  <span class="job__times mono">
+                    {clock(j.startedAt ?? j.createdAt)}
+                    {j.finishedAt !== null && ` → ${clock(j.finishedAt)}`}
+                  </span>
+                  <span class="job__state" data-state={j.state}>
+                    <span
+                      class:list={[
+                        'dot',
+                        j.state === 'running' && 'dot--ok',
+                        j.state === 'failed' && 'dot--bad',
+                      ]}
+                    />
+                    {STATE_LABEL[j.state]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )
+      }
+
+      <p class="note">
+        La tabla <span class="mono">jobs</span> no guarda progreso: un trabajo sabe cuántos intentos
+        ha costado y cuándo empezó, no por dónde va. Mientras no exista esa columna, esta pantalla
+        no la inventa.
+      </p>
     </div>
 
     <aside class="split__aside panel">
       <section class="panel__block">
         <header class="section-head">
-          <h2 class="section-head__title">LANZAR PROCESO</h2>
+          <h2 class="section-head__title">ENCOLAR PROCESO</h2>
         </header>
 
-        <div class="segmented" role="group" aria-label="Tipo de proceso">
-          {
-            modes.map((m) => (
-              <button class="segmented__option" type="button" disabled aria-pressed={m === activeMode}>
-                {m}
-              </button>
-            ))
-          }
-        </div>
+        {
+          flash !== null && (
+            <p class:list={['flash', flash.kind === 'bad' && 'flash--bad']} role="status">
+              {flash.text}
+            </p>
+          )
+        }
 
-        <div class="field">
-          <span class="field-label" id="lbl-objetivo">OBJETIVO</span>
-          <input
-            class="input input--mono"
-            disabled
-            aria-labelledby="lbl-objetivo"
-            placeholder="ids 130100–130400  ·  o un nº de expediente"
-          />
-        </div>
+        <form class="launch" method="post" action="/procesos">
+          <div class="segmented segmented--wrap" role="radiogroup" aria-label="Tipo de proceso">
+            {
+              JOB_KINDS.map((kind) => (
+                <>
+                  <input
+                    class="segmented__radio"
+                    type="radio"
+                    name="tipo"
+                    id={`tipo-${kind}`}
+                    value={kind}
+                    checked={kind === activeMode}
+                  />
+                  <label class="segmented__option" for={`tipo-${kind}`}>{kind}</label>
+                </>
+              ))
+            }
+          </div>
+          <dl class="kinds">
+            {
+              JOB_KINDS.map((kind) => (
+                <div class="kinds__row">
+                  <dt class="mono">{kind}</dt>
+                  <dd>{KIND_HINT[kind]}</dd>
+                </div>
+              ))
+            }
+          </dl>
 
-        <div class="field">
-          <span class="field-label" id="lbl-ritmo">CONCURRENCIA · RITMO</span>
-          <input
-            class="input input--mono"
-            disabled
-            aria-labelledby="lbl-ritmo"
-            placeholder={`4 workers  ·  ${roundedRate} req/s`}
-          />
-        </div>
+          <div class="field">
+            <label class="field-label" for="objetivo">OBJETIVO</label>
+            <input
+              class="input input--mono"
+              id="objetivo"
+              name="objetivo"
+              value={prefill}
+              placeholder={TARGET_PLACEHOLDER}
+            />
+          </div>
 
-        <button class="btn btn--block" type="button" disabled>
-          <Icon name="play" size={14} />
-          Encolar proceso
-        </button>
+          <button class="btn btn--block" type="submit">
+            <Icon name="play" size={14} />
+            Encolar proceso
+          </button>
 
-        <p class="hint hint--lg">
-          ≈ {formatInt(overview.requestsPerCase)} peticiones por caso. {formatInt(SAMPLE_BATCH)} casos
-          ≈ {formatInt(sampleMinutes)} min a {roundedRate} req/s.
-        </p>
+          <p class="hint hint--lg">
+            Encolar escribe una fila en <span class="mono">jobs</span> y nada más. El ritmo, la
+            concurrencia y los reintentos son del worker que la tome, no de esta pantalla.
+          </p>
+        </form>
       </section>
 
       <section class="panel__block">
@@ -136,24 +231,31 @@ const activeMode = 'deep'
           <p class="section-head__aside mono num failures__count">{formatInt(overview.openFailures)}</p>
         </header>
 
-        <ul>
-          {
-            overview.failures.map((f) => (
-              <li class="failure">
-                <span class="failure__top">
-                  <span class="mono failure__kind">{f.kind}</span>
-                  <span class="mono failure__ref">{f.ref}</span>
-                </span>
-                <span class="failure__error">{f.error}</span>
-              </li>
-            ))
-          }
-        </ul>
+        {
+          overview.failures.length === 0 ? (
+            <p class="empty">Ninguno. Cada captura que sale bien cierra los fallos que dejó la anterior.</p>
+          ) : (
+            <ul>
+              {overview.failures.map((f) => (
+                <li class="failure">
+                  <span class="failure__top">
+                    <span class="mono failure__kind">{f.kind}</span>
+                    <span class="mono failure__ref">{f.ref}</span>
+                  </span>
+                  <span class="failure__error" title={f.raw}>{f.error}</span>
+                  <span class="failure__when mono">
+                    {formatInt(f.attempts)} {f.attempts === 1 ? 'intento' : 'intentos'} · {f.lastAttemptAt}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )
+        }
 
-        <button class="btn btn--ghost btn--block" type="button" disabled>
-          <Icon name="rotate-ccw" size={14} />
-          Reintentar los {formatInt(overview.openFailures)}
-        </button>
+        <p class="hint hint--lg">
+          Un fallo se cierra solo: la siguiente captura del mismo objetivo que salga bien lo marca
+          resuelto. Para reintentarlos, encola de nuevo el expediente que los produjo.
+        </p>
       </section>
     </aside>
   </div>
@@ -169,7 +271,7 @@ const activeMode = 'deep'
   }
 
   .kpis { display: flex; flex-wrap: wrap; gap: 20px 0; padding-bottom: 32px; }
-  .kpi { flex: 1 1 150px; padding-right: 24px; }
+  .kpi { flex: 1 1 130px; padding-right: 24px; }
   .kpi__value {
     font-size: clamp(1.4rem, 2.2vw, 1.875rem);
     font-weight: 300;
@@ -189,15 +291,21 @@ const activeMode = 'deep'
 
   .job {
     display: grid;
-    grid-template-columns: 86px minmax(0, 1fr) 96px 114px;
-    align-items: center;
+    grid-template-columns: 96px minmax(0, 1fr) 64px 132px 106px;
+    align-items: baseline;
     gap: 16px;
-    padding-block: 14px;
-    border-bottom: 1px solid var(--line);
   }
+  .job--row { padding-block: 14px; border-bottom: 1px solid var(--line); }
   .job__kind { font-size: 12px; color: var(--ink); }
   .job__target { font-size: 14px; font-weight: 300; color: var(--ink-2); overflow-wrap: anywhere; }
-  .job__progress { font-size: 12px; color: var(--ink-2); }
+  .job__error {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--bad);
+  }
+  .job__attempts, .job__times { font-size: 12px; color: var(--ink-3); }
   .job__state {
     display: flex;
     align-items: center;
@@ -208,11 +316,21 @@ const activeMode = 'deep'
   }
   .job__state[data-state='failed'] { color: var(--bad); }
 
-  @media (max-width: 720px) {
-    .job { grid-template-columns: 86px minmax(0, 1fr); gap: 6px 16px; }
-    .job__progress { grid-column: 1; justify-self: start; }
+  @media (max-width: 860px) {
+    .job { grid-template-columns: 96px minmax(0, 1fr); gap: 6px 16px; }
+    .job.row-head { display: none; }
+    .job__attempts, .job__times { grid-column: 1; justify-self: start; }
     .job__state { grid-column: 2; justify-content: flex-start; }
   }
+
+  .note, .empty {
+    font-size: 12px;
+    font-weight: 300;
+    line-height: 1.55;
+    color: var(--ink-3);
+  }
+  .note { padding-top: 8px; }
+  .note .mono { font-size: 11px; color: var(--ink-2); }
 
   .panel {
     display: flex;
@@ -224,9 +342,45 @@ const activeMode = 'deep'
   @media (max-width: 1080px) { .panel { padding: 32px var(--gutter) 40px; } }
 
   .panel__block { display: flex; flex-direction: column; gap: 14px; }
+  .launch { display: flex; flex-direction: column; gap: 14px; }
   .field { display: flex; flex-direction: column; gap: 7px; }
   .hint--lg { font-size: 12px; line-height: 1.5; }
+
+  .kinds { display: flex; flex-direction: column; gap: 6px; }
+  .kinds__row { display: flex; gap: 10px; align-items: baseline; }
+  .kinds dt { flex: none; min-width: 96px; font-size: 11px; color: var(--ink-2); }
+  .kinds dd { font-size: 12px; font-weight: 300; line-height: 1.45; color: var(--ink-3); }
+  @media (max-width: 520px) {
+    .kinds__row { flex-direction: column; gap: 2px; }
+  }
+  .hint--lg .mono { font-size: 11px; color: var(--ink-2); }
   .failures__count { color: var(--bad); }
+
+  /* The design's segmented control, as radios so it submits with the form and
+     needs no client script to remember which option is chosen. */
+  .segmented--wrap { flex-wrap: wrap; }
+  .segmented__radio {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .segmented__option { flex: 1 1 auto; }
+  .segmented__radio:checked + .segmented__option { background: var(--ink); color: var(--paper); }
+  .segmented__radio:focus-visible + .segmented__option { outline: 2px solid var(--ink); outline-offset: -2px; }
+
+  .flash {
+    padding: 12px 14px;
+    border-left: 2px solid var(--ok);
+    border-radius: var(--radius);
+    background: var(--paper);
+    font-size: 13px;
+    font-weight: 300;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  .flash--bad { border-left-color: var(--bad); color: var(--bad); }
 
   .failure {
     display: flex;
@@ -240,4 +394,5 @@ const activeMode = 'deep'
   .failure__kind { font-size: 11px; color: var(--ink-2); }
   .failure__ref { font-size: 11px; color: var(--ink-3); }
   .failure__error { font-size: 12px; font-weight: 300; line-height: 1.45; color: var(--ink-2); }
+  .failure__when { font-size: 11px; color: var(--ink-3); }
 </style>

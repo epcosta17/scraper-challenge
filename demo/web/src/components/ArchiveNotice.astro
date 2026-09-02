@@ -1,0 +1,97 @@
+---
+import Icon from './Icon.astro'
+import { data } from '../data/index.ts'
+
+/**
+ * Says out loud when there is nothing behind the screens.
+ *
+ * An app whose database is missing must not render "0 expedientes": that is
+ * the one answer indistinguishable from a court with no cases in it. This sits
+ * above every screen and, on the three states that are not `ready`, says which
+ * file was looked for and what to run to fill it.
+ */
+const status = await data.status()
+
+const NOTICE = {
+  missing: {
+    title: 'No hay ninguna base de datos que leer.',
+    body: 'Nada de lo que sigue son datos: las pantallas están vacías porque el fichero no existe, no porque el tribunal no tenga expedientes.',
+  },
+  empty: {
+    title: 'La base existe, pero no tiene ningún expediente todavía.',
+    body: 'Ninguna captura ha escrito en ella. Los contadores en cero de abajo son reales y significan exactamente eso.',
+  },
+  unreadable: {
+    title: 'La base de datos no se pudo abrir.',
+    body: 'Hasta que se resuelva, ninguna pantalla puede mostrar nada del acervo.',
+  },
+} as const
+---
+
+{
+  status.kind !== 'ready' && (
+    <aside class="archive gutter" role="alert">
+      <Icon name="triangle-alert" size={18} />
+      <div>
+        <p class="archive__title">{NOTICE[status.kind].title}</p>
+        <p class="archive__body">{NOTICE[status.kind].body}</p>
+        {status.kind === 'unreadable' && <p class="archive__error mono">{status.error}</p>}
+        <dl class="archive__paths">
+          <div>
+            <dt>BASE</dt>
+            <dd class="mono">{status.databasePath}</dd>
+          </div>
+          <div>
+            <dt>PDFS</dt>
+            <dd class="mono">{status.blobRoot}</dd>
+          </div>
+        </dl>
+        <p class="archive__body">
+          Llénala con <span class="mono">npm run scraper -- deep --from-id 130103 --to-id 130112</span>,
+          o apunta la web a otra con <span class="mono">PJE_DB</span> y <span class="mono">PJE_PDFS</span>.
+        </p>
+      </div>
+    </aside>
+  )
+}
+
+<style>
+  .archive {
+    display: flex;
+    gap: 14px;
+    margin-top: 24px;
+    padding: 18px 20px;
+    background: var(--surface);
+    border-left: 2px solid var(--warn);
+    border-radius: var(--radius);
+  }
+  .archive :global(svg) { color: var(--warn); flex: none; margin-top: 2px; }
+  .archive__title { font-size: 15px; font-weight: 500; color: var(--ink); }
+  .archive__body {
+    margin-top: 6px;
+    font-size: 13px;
+    font-weight: 300;
+    line-height: 1.55;
+    color: var(--ink-2);
+  }
+  .archive__body .mono { font-size: 12px; color: var(--ink); }
+  .archive__error {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--bad);
+    overflow-wrap: anywhere;
+  }
+  .archive__paths {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 32px;
+    margin-top: 12px;
+  }
+  .archive__paths dt {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    color: var(--ink-3);
+  }
+  .archive__paths dd { margin-top: 3px; font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+</style>
