@@ -141,6 +141,48 @@ export type ArchiveStatus =
  */
 export const PORTAL_ROW_LIMIT = 30
 
+/**
+ * The criteria the search form can carry, named exactly as the CLI names its
+ * flags (`--number`, `--from`, `--class`, …) and as `AcervoFilters` names
+ * them in `@pje/core`. One word, one meaning, from the command line through
+ * the query string to the SQL.
+ *
+ * Every one of them is a column the acervo really stores. A criterion the
+ * schema could not answer would not be here: a control wired to nothing is
+ * worse than a control that is missing.
+ */
+export interface SearchFilters {
+  /** CNJ number, matched exactly. */
+  number?: string
+  /** Distribution date, `dd/mm/yyyy`, start of the range. */
+  from?: string
+  /** Distribution date, `dd/mm/yyyy`, end of the range. */
+  to?: string
+  /** Judicial class, matched as a substring, accents and case ignored. */
+  class?: string
+  /** Name of a participant who is not a lawyer. */
+  party?: string
+  /** Name of a participant whose role is `ADVOGADO`. */
+  lawyer?: string
+  document?: string
+  documentType?: 'cpf' | 'cnpj'
+  oab?: string
+  oabState?: string
+  reference?: string
+}
+
+/** What the form asks: free text, the eight criteria, or both together. */
+export interface SearchCriteria {
+  text?: string
+  filters?: SearchFilters
+}
+
+/** A judicial class present in the acervo, for the class control. */
+export interface ClassOption {
+  name: string
+  caseCount: number
+}
+
 /** A run of snippet text, `hit` on the part the query matched. */
 export interface SnippetSegment {
   text: string
@@ -169,7 +211,11 @@ export interface SearchHit {
 export interface SearchResult {
   /** The query exactly as it was typed. */
   query: string
-  /** What it was translated to before reaching FTS5 — shown so a surprising result is explainable. */
+  /**
+   * What it was translated to before reaching FTS5 — shown so a surprising
+   * result is explainable. Null when nothing was typed into the text box: a
+   * search made only of filters never reaches FTS5 at all.
+   */
   ftsQuery: string | null
   hits: SearchHit[]
   /** Matching cases in total, not just on this page. */
@@ -178,8 +224,14 @@ export interface SearchResult {
   pageSize: number
   pageCount: number
   elapsedMs: number
-  /** Why the query could not run at all: it had no searchable term in it. */
+  /** Why the search could not run at all, in Spanish. */
   error: string | null
+  /**
+   * Which input `error` is about, so the form can point at it instead of
+   * printing a sentence over a page of nine fields. `text` for the query box;
+   * otherwise the criterion, named as `SearchFilters` names it.
+   */
+  errorField: 'text' | 'from' | 'to' | 'oabState' | null
 }
 
 // ── Capture processes ───────────────────────────────────────────────────────

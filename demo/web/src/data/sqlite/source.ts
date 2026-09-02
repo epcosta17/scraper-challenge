@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { basename } from 'node:path'
 import {
   FsBlobStore,
+  SearchFilterError,
   SearchQueryError,
   countCapturedSince,
   countJobsByStatus,
@@ -14,10 +15,13 @@ import {
   getMovementsByCase,
   getMovementsForCases,
   getPartiesByCase,
+  listCaseClasses,
   listCasesPage,
   listFailures,
   listJobs,
+  listOabStates,
   openDatabase,
+  searchAcervo,
   searchCases,
   type AcervoCaseRow,
   type Db,
@@ -39,6 +43,7 @@ import type {
   CaseSummary,
   ChatMessage,
   ChatSource,
+  ClassOption,
   Conversation,
   Coverage,
   EnqueueOutcome,
@@ -47,6 +52,8 @@ import type {
   JobState,
   Movement,
   Party,
+  SearchCriteria,
+  SearchFilters,
   SearchHit,
   SearchResult,
 } from '../types.ts'
@@ -214,20 +221,26 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       }
     },
 
-    async search(query: string, page: number, pageSize: number): Promise<SearchResult> {
+    async search(criteria: SearchCriteria, page: number, pageSize: number): Promise<SearchResult> {
       const size = Math.max(1, pageSize)
       const asked = Number.isFinite(page) ? Math.max(1, page) : 1
-      const empty = (error: string | null): SearchResult => ({
-        query, ftsQuery: null, hits: [], total: 0,
-        page: 1, pageSize: size, pageCount: 1, elapsedMs: 0, error,
+      const text = (criteria.text ?? '').trim()
+      const filters = usedFilters(criteria.filters ?? {})
+      const empty = (error: string | null, errorField: SearchResult['errorField']): SearchResult => ({
+        query: text, ftsQuery: null, hits: [], total: 0,
+        page: 1, pageSize: size, pageCount: 1, elapsedMs: 0, error, errorField,
       })
 
       const conn = connect()
-      if (conn === null || query.trim() === '') return empty(null)
+      // A form with nothing in it is not an error and not "the whole acervo":
+      // it is a screen waiting to be filled in.
+      if (conn === null || (text === '' && Object.keys(filters).length === 0)) {
+        return empty(null, null)
+      }
 
       const started = performance.now()
       try {
-        const results = searchCases(conn.db, query, {
+        const results = searchAcervo(conn.db, { text, filters }, {
           limit: size,
           offset: (asked - 1) * size,
           highlightStart: HIGHLIGHT_START,
@@ -235,8 +248,8 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
         })
         const pageCount = Math.max(1, Math.ceil(results.total / size))
         return {
-          query,
-          ftsQuery: results.ftsQuery,
+          query: text,
+          ftsQuery: text === '' ? null : results.ftsQuery,
           hits: results.hits.map(toSearchHit),
           total: results.total,
           page: Math.min(asked, pageCount),
@@ -244,13 +257,26 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
           pageCount,
           elapsedMs: Math.round(performance.now() - started),
           error: null,
+          errorField: null,
         }
       } catch (err) {
+        if (err instanceof SearchFilterError) return empty(filterErrorText(err), err.field)
         if (err instanceof SearchQueryError) {
-          return empty('La consulta no tiene ningún término que se pueda buscar.')
+          return empty('La consulta no tiene ningún término que se pueda buscar.', 'text')
         }
         throw err
       }
+    },
+
+    async caseClasses(): Promise<ClassOption[]> {
+      const conn = connect()
+      if (conn === null) return []
+      return listCaseClasses(conn.db).map((c) => ({ name: c.className, caseCount: c.caseCount }))
+    },
+
+    async oabStates(): Promise<string[]> {
+      const conn = connect()
+      return conn === null ? [] : listOabStates(conn.db)
     },
 
     async conversation(question: string | null): Promise<Conversation> {
@@ -397,6 +423,54 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
         return null
       }
     },
+  }
+}
+
+// ── The search form ─────────────────────────────────────────────────────────
+
+/**
+ * The criteria the person actually filled in.
+ *
+ * A GET form submits every field it has, empty ones included, so the query
+ * string always carries all nine names. Passing an empty string on to the
+ * repository would be asking it to match cases whose class is `''`; dropping
+ * it here is what makes "leave it blank" mean "do not narrow by this".
+ *
+ * `documentType` is the exception: it is a choice between two, never blank,
+ * and it only means anything alongside a document number — on its own it
+ * would silently halve the result set.
+ */
+function usedFilters(raw: SearchFilters): SearchFilters {
+  const used: SearchFilters = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === 'documentType') continue
+    if (typeof value === 'string' && value.trim() !== '') {
+      used[key as Exclude<keyof SearchFilters, 'documentType'>] = value.trim()
+    }
+  }
+  if (used.document !== undefined && raw.documentType !== undefined) {
+    used.documentType = raw.documentType
+  }
+  return used
+}
+
+/**
+ * A refused filter, in the language of the screen and pointing at the field.
+ *
+ * Switched on `problem`, never on the message: `@pje/core` speaks English on
+ * purpose and its wording is not a contract.
+ */
+function filterErrorText(err: SearchFilterError): string {
+  switch (err.problem) {
+    case 'date-format':
+      return `«${err.value}» no es una fecha. Escríbela como dd/mm/aaaa — por ejemplo 17/08/2026.`
+    case 'date-not-real':
+      return `«${err.value}» no existe en el calendario.`
+    case 'range-inverted':
+      return 'El rango de fechas termina antes de empezar.'
+    case 'oab-state-without-number':
+      return 'El estado de la OAB no filtra nada por sí solo: el portal lo ignora en silencio, ' +
+        'así que aquí se exige también el número.'
   }
 }
 

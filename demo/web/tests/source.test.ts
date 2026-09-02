@@ -217,7 +217,7 @@ describe('one case', () => {
 
 describe('full-text search', () => {
   it('finds a case through the text of one of its documents, with the fragment', async () => {
-    const result = await source().search('extinto', 1, 10)
+    const result = await source().search({ text: 'extinto' }, 1, 10)
     expect(result.error).toBeNull()
     expect(result.total).toBe(1)
     const hit = result.hits[0]!
@@ -230,30 +230,86 @@ describe('full-text search', () => {
   })
 
   it('folds the accents a person typing on a Brazilian portal will not type', async () => {
-    await expect(source().search('sentenca', 1, 10)).resolves.toMatchObject({ total: 1 })
+    await expect(source().search({ text: 'sentenca' }, 1, 10)).resolves.toMatchObject({ total: 1 })
   })
 
   it('finds a case through a party name', async () => {
-    const result = await source().search('"UNIÃO FEDERAL"', 1, 10)
+    const result = await source().search({ text: '"UNIÃO FEDERAL"' }, 1, 10)
     expect(result.hits.map((h) => h.number)).toEqual([CASE_TRUNCATED])
     expect(result.hits[0]!.matchedIn).toContain('party')
   })
 
   it('takes a pasted case number, punctuation and all', async () => {
-    const result = await source().search(CASE_FULL, 1, 10)
+    const result = await source().search({ text: CASE_FULL }, 1, 10)
     expect(result.hits[0]!.number).toBe(CASE_FULL)
   })
 
   it('says a query has nothing searchable in it instead of failing', async () => {
-    const result = await source().search('***', 1, 10)
+    const result = await source().search({ text: '***' }, 1, 10)
     expect(result.error).not.toBeNull()
     expect(result.hits).toEqual([])
   })
 
   it('answers an empty box with nothing at all, and no error', async () => {
-    const result = await source().search('   ', 1, 10)
+    const result = await source().search({ text: '   ' }, 1, 10)
     expect(result.hits).toEqual([])
     expect(result.error).toBeNull()
+  })
+})
+
+describe('the form\'s own criteria, over the same acervo', () => {
+  it('filters by judicial class without any text at all', async () => {
+    const result = await source().search({ filters: { class: 'apelacao' } }, 1, 10)
+    expect(result.error).toBeNull()
+    expect(result.hits.map((h) => h.number)).toEqual([CASE_FULL])
+    // Nothing was matched through the text index, and the hit says so.
+    expect(result.hits[0]!.matchedIn).toEqual([])
+    expect(result.ftsQuery).toBeNull()
+  })
+
+  it('filters by a party name and by a CPF however it is punctuated', async () => {
+    await expect(source().search({ filters: { party: 'crecio germano' } }, 1, 10))
+      .resolves.toMatchObject({ total: 1 })
+    await expect(source().search({ filters: { document: '15575349420', documentType: 'cpf' } }, 1, 10))
+      .resolves.toMatchObject({ total: 1 })
+  })
+
+  it('narrows a text query with a filter, and counts only what survives it', async () => {
+    await expect(source().search({ text: 'extinto', filters: { class: 'apelacao' } }, 1, 10))
+      .resolves.toMatchObject({ total: 1 })
+    await expect(source().search({ text: 'extinto', filters: { class: 'embargos' } }, 1, 10))
+      .resolves.toMatchObject({ total: 0, error: null })
+  })
+
+  it('answers a form with nothing in it with nothing at all, and no error', async () => {
+    await expect(source().search({ text: '  ', filters: { party: '' } }, 1, 10))
+      .resolves.toMatchObject({ hits: [], total: 0, error: null })
+  })
+
+  it('says in Spanish which field is wrong, rather than throwing', async () => {
+    const bad = await source().search({ filters: { from: '2026-08-17' } }, 1, 10)
+    expect(bad.errorField).toBe('from')
+    expect(bad.error).toContain('dd/mm/aaaa')
+
+    const impossible = await source().search({ filters: { to: '31/02/2026' } }, 1, 10)
+    expect(impossible.errorField).toBe('to')
+
+    const backwards = await source().search({ filters: { from: '22/08/2026', to: '17/08/2026' } }, 1, 10)
+    expect(backwards.errorField).toBe('to')
+
+    const lonelyState = await source().search({ filters: { oabState: 'PE' } }, 1, 10)
+    expect(lonelyState.errorField).toBe('oabState')
+    expect(lonelyState.error).toContain('OAB')
+  })
+
+  it('offers a class control only the classes the acervo actually holds', async () => {
+    await expect(source().caseClasses()).resolves.toEqual([
+      { name: 'APELAÇÃO CÍVEL', caseCount: 1 },
+      { name: 'EMBARGOS À EXECUÇÃO', caseCount: 1 },
+    ])
+    // No captured party carries an OAB registration, so the state control has
+    // nothing honest to offer and says so with an empty list.
+    await expect(source().oabStates()).resolves.toEqual([])
   })
 })
 
@@ -350,7 +406,7 @@ describe('an acervo that is not there', () => {
     })
     await expect(dead.listCases(1, 6)).resolves.toMatchObject({ items: [], total: 0 })
     await expect(dead.getCase(CASE_FULL)).resolves.toBeNull()
-    await expect(dead.search('extinto', 1, 10)).resolves.toMatchObject({ hits: [], total: 0 })
+    await expect(dead.search({ text: 'extinto' }, 1, 10)).resolves.toMatchObject({ hits: [], total: 0 })
     await expect(dead.captureOverview()).resolves.toMatchObject({ jobs: [], failures: [] })
     await expect(dead.openDocument(12101987)).resolves.toBeNull()
   })

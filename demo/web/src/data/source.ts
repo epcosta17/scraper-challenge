@@ -4,9 +4,11 @@ import type {
   CaseDetail,
   CasePage,
   CaptureOverview,
+  ClassOption,
   Conversation,
   EnqueueOutcome,
   JobKind,
+  SearchCriteria,
   SearchResult,
 } from './types.ts'
 
@@ -46,11 +48,19 @@ export interface WebDataSource {
   getCase(number: string): Promise<CaseDetail | null>
 
   /**
-   * Full-text search across case metadata, party names and the text of every
-   * document, ranked, with a highlighted fragment of the document that
-   * matched. An empty query answers with no hits and no error.
+   * The search form, answered against the acervo: free text across case
+   * metadata, party names and the text of every document — ranked, with a
+   * highlighted fragment of the document that matched — narrowed by any of
+   * the portal's own eight criteria. A form with nothing in it answers with
+   * no hits and no error.
    */
-  search(query: string, page: number, pageSize: number): Promise<SearchResult>
+  search(criteria: SearchCriteria, page: number, pageSize: number): Promise<SearchResult>
+
+  /** The judicial classes the acervo holds, for the class control to offer. */
+  caseClasses(): Promise<ClassOption[]>
+
+  /** The OAB states the acervo holds a lawyer for. Empty when it holds none. */
+  oabStates(): Promise<string[]>
 
   /** The same index, asked in prose: the passages an answer would stand on. */
   conversation(question: string | null): Promise<Conversation>
