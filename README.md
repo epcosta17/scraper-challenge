@@ -581,19 +581,40 @@ stored watermark.
     duplicating them.
   - **`movements`** — one row per entry in the case's procedural log:
     case id, `position` (the log's own order), `timestamp`, `description`.
-    Populated by **both** `crawl` and `daily`, not only `deep` — the log is
-    parsed from the case's summary PDF, which every case already downloads,
-    at no extra request. This is deliberately **not** the detail page's own
-    "Movimentações do Processo" table, which renders only its first page
-    (found live, case 0800245-51.2020.4.05.8002: 15 rows of a stated 39).
-    That table *can* be paged — its control is a RichFaces number slider in
-    a form of its own — but doing so costs extra requests per case and works
-    only in `deep`, the one command that loads the detail page, whereas the
-    summary PDF carries the whole log in one shot for every case. `deep`, which fetches both sources,
-    cross-checks the PDF's count against the detail page's stated total and
-    records a `movements`-kind `failures` row if they ever disagree — the
-    signal that this assumption has broken for some case. Re-running a case
-    replaces its movements rather than duplicating them.
+    There are two sources, and they are not equal.
+
+    `deep` reads the case file's own "Movimentações do Processo" table, page
+    by page — fifteen rows at a time, driven through the RichFaces number
+    slider that pages it. `crawl` and `daily` have no case file in hand, so
+    they parse the log out of the summary PDF every case already downloads,
+    at no extra request.
+
+    The table is the better one. Measured on case 0000292-82.2007.4.05.8400,
+    whose page declares 4,182 movements: the table returns exactly that, the
+    PDF returns 4,200. The eighteen extra are not movements — a hearing reads
+    *"Audiência Instrução Realizada para 26/05/2008 17:11:00 Sala de
+    Audiências."*, with a timestamp inside its own text, and the PDF parser
+    delimits movements by timestamps, so it cuts there and invents a second
+    entry saying only "Sala de Audiências.". Every case with a hearing has
+    this. The PDF's text is dirtier too: *"Não- acolhidos"*, carrying the
+    hyphen and space of a line wrap.
+
+    So the PDF's version can never overwrite the table's. That rule lives in
+    `replaceMovementsForCase`, not in its callers, because it is an invariant
+    about the data: without it a `crawl` passing over an already-deep-scraped
+    id silently degrades the case — 21 movements down to 19 — and `crawl`
+    never loads the page it would need to notice. A same-or-better source
+    always writes, so a second crawl still refreshes a case that only ever had
+    the PDF's version.
+
+    Paging costs one request per fifteen movements beyond the first: nothing
+    at all for 85% of a real acervo, 2.6 on average, and 279 for the one case
+    with 4,182 of them. The page size is not negotiable — `rows` is fixed in
+    the server's own XHTML, and asking for a hundred returns fifteen.
+
+    `deep` still cross-checks the stored count against the page's stated total
+    and records a `movements`-kind `failures` row if they disagree. Re-running
+    a case replaces its movements rather than duplicating them.
   - **`documents`** — one row per document `deep` has downloaded: a binary
     document's `pdf_key` into the blob store *and* its own `text_content`
     (extracted from the PDF itself — the same stream-walking extractor the
