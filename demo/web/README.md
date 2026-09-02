@@ -1,7 +1,8 @@
 # `@pje-trf5/web` — Consulta Procesal
 
-The five screens of `web.pen`, as a server-rendered Astro app. Spanish
-interface, Portuguese court data — the same border the design draws.
+The five screens of `web.pen`, as a server-rendered Astro app over the SQLite
+file the scraper writes. Spanish interface, Portuguese court data — the same
+border the design draws.
 
 ## Running it
 
@@ -9,7 +10,8 @@ From the repository root:
 
 ```sh
 npm install
-npm run dev --workspace demo/web       # http://localhost:4321
+npm run scraper -- deep --from-id 130103 --to-id 130112   # fill data/pje.db
+npm run dev --workspace demo/web                          # http://localhost:4321
 ```
 
 Production:
@@ -20,9 +22,29 @@ npm run start --workspace demo/web     # node ./dist/server/entry.mjs
 ```
 
 `npm run typecheck --workspace demo/web` type-checks the data layer and the
-helpers. (`astro check` is not wired up: it resolves the repo's TypeScript 7 and
-its language server cannot run on it. `astro build` still fails on anything that
+helpers; `npm test` from the root runs `demo/web/tests` alongside the packages'.
+(`astro check` is not wired up: it resolves the repo's TypeScript 7 and its
+language server cannot run on it. `astro build` still fails on anything that
 does not compile.)
+
+## Where the data comes from
+
+| Variable | Default | What it is |
+| --- | --- | --- |
+| `PJE_DB` | `data/pje.db` | the SQLite file, the scraper's `--db` |
+| `PJE_PDFS` | `data/pdfs` | the blob store, the scraper's `--out` |
+
+The defaults hang off the **repository root** — found by walking up to the
+`package.json` that declares `workspaces` — not off the working directory:
+`npm run dev --workspace demo/web` starts in `demo/web`, and a default relative
+to that would quietly create an empty second database next to the app. An
+override that is relative resolves against the directory the server was started
+in.
+
+If the file is not there, is empty, or will not open, every screen says so at
+the top and answers with real zeroes. Nothing is ever created on the app's way
+past: an empty database at the wrong path looks exactly like a court with no
+cases in it.
 
 ## Routes
 
@@ -30,46 +52,67 @@ does not compile.)
 | --- | --- |
 | `/` | `01 Expedientes` — the acervo, paginated |
 | `/expedientes/:numero` | `02 Ficha del expediente` |
-| `/chat` | `03 Chat` |
-| `/procesos` | `04 Procesos` — capture queue and failures |
-| `/busqueda` | `05 Búsqueda` — the portal's public form |
+| `/expedientes/:numero/resumen.pdf` | the portal's summary PDF for the case |
+| `/chat` | `03 Chat` — the same index, asked in prose |
+| `/procesos` | `04 Procesos` — the queue, and the only place that writes |
+| `/busqueda` | `05 Búsqueda` — full text over the acervo |
+| `/documentos/:id` | one stored document, inline or `?descargar` |
 
 `/procesos` is not in the design's nav, which carries only Expedientes,
 Búsqueda and Chat on all five screens. It is reached from the sync pill in the
 top right: that pill *is* the capture status, so it links to the screen that
 explains it.
 
-## Where the real database plugs in
+## The data layer
 
 Everything the app knows about storage lives in `src/data/`:
 
 - `types.ts` — the view types the templates render.
-- `source.ts` — the `WebDataSource` interface. Six async methods, nothing else.
-- `fixtures.ts` — today's implementation: the sample rows lifted from the design.
+- `source.ts` — the `WebDataSource` interface.
+- `config.ts` — which database and which PDF directory.
+- `sqlite/` — the implementation over `@pje/core`'s repositories.
 - `index.ts` — **the seam.** One expression picks the implementation.
 
-Connecting SQLite means writing a source over `@pje-trf5/core`'s repositories
-and changing that one line in `index.ts`. No page opens a database, no page
-imports `fixtures.ts`, and no storage row shape reaches a template.
+No page opens a database and no storage row shape reaches a template. Every
+method is `async` so a synchronous better-sqlite3 implementation and a remote
+one are both drop-ins, and none of them throws for a missing acervo.
 
-Every method is `async` so a synchronous `better-sqlite3` implementation and a
-remote one are both drop-ins.
-
-## Two things that are not decoration
+## Three things that are not decoration
 
 **Completeness.** `Coverage` (`{ captured, declared }`) is the type behind every
-count the portal also declares a total for. When they disagree — the detail
-page's Datascroller only ever paints ten parties, a document download 429s out —
-the number renders as `10 / 41` in the warning colour, the capture panel flips to
-*Incompleto*, and a notice above the list says how many rows are missing and
-why. A truncated list is never presented as a complete one. See
-`0024885-29.2005.4.05.0000` (parties) and `0800245-51.2020.4.05.8002`
-(documents).
+count the portal also declares a total for. The declared totals are not columns:
+when a list comes back short the scraper files a `failures` row and puts both
+numbers in its message, and `sqlite/declared.ts` is what reads them back out. So
+`0024885-29.2005.4.05.0000` renders as `11 / 41` in the warning colour, the
+capture panel flips to *Incompleto*, a notice says how many rows are missing and
+why, and the scraper's own account of the gap is printed underneath. A truncated
+list is never presented as a complete one.
 
-**The 30-row cap.** `searchPortal` returns `rowLimit` and `capped` alongside the
-hits. The portal cuts every query at 30 rows *in the server-side query*, so no
-parameter and no page number gets past it — which is why the screen has no
-pagination. The banner says that in words; it is not reduced to an icon.
+**The 30-row cap.** The portal cuts every query at 30 rows *in the server-side
+query*, so no parameter and no page number gets past it. That is still true, and
+it is exactly why `/busqueda` searches the captured acervo instead: the crawl is
+what buys coverage the public form cannot give. The banner says so in words.
+
+**No invented progress.** `jobs` records what a job is and what has happened to
+it — attempts, when the current attempt started, when it ended, why it failed —
+and nothing writes "217 of 300" anywhere. The queue shows the columns that
+exist and says, in a line under the table, that the progress column does not.
+
+## What writes
+
+Exactly one thing: the "Encolar proceso" form on `/procesos`, which inserts one
+row into `jobs` through `enqueueJob` and redirects. An external worker claims it
+and does the capturing. The payload shapes the two halves agree on are written
+down in `src/data/sqlite/jobs.ts`.
+
+## No client framework
+
+There is none, and nothing needs one. Pagination, the movement "ver todos"
+toggle and the document links are links; search and chat are plain GET forms;
+the queue is a POST form whose segmented control is four radio inputs. The
+acervo's three column filters (Clase, Órgano, Periodo) are the only controls
+still rendered `disabled` — they need query surface that does not exist yet, and
+a dead control is more honest than one wired to nothing.
 
 ## Responsive
 
@@ -88,10 +131,3 @@ The design is drawn at 1440. Degrading, in order:
 
 Titles are `clamp()`ed rather than stepped, so type scales continuously instead
 of snapping at a breakpoint.
-
-## No client framework
-
-There is none, and nothing needs one. Pagination and the movement "ver todos"
-toggle are links; the portal search is a plain GET form. The controls the mock-up
-cannot honour yet (acervo filters, "refrescar expediente", "encolar proceso") are
-rendered `disabled` rather than wired to nothing.
