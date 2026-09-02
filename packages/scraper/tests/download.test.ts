@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { HttpClient } from '../src/http/client.ts'
-import { downloadDocument, filenameFromContentDisposition, extractActText } from '../src/pje/download.ts'
+import { downloadDocument, filenameFromContentDisposition, extractActText, parseActPdfForm } from '../src/pje/download.ts'
 import { documentHtmlUrl } from '../src/pje/urls.ts'
 import type { BinaryDocumentRef, HtmlDocumentRef } from '../src/pje/detail.ts'
 
@@ -112,6 +112,50 @@ describe('extractActText', () => {
     const html = '<html><head><style>p{color:red}</style></head>' +
       '<body><script>var x=1;</script><p>ato judicial</p></body></html>'
     expect(extractActText(html)).toBe('ato judicial')
+  })
+})
+
+describe('parseActPdfForm', () => {
+  // The `ca` the "Gerar PDF" trigger carries is 112 hex — twice the length of
+  // the case's own 48-hex `ca`, and a different value again from the one in
+  // the act page's own URL. Asserted literally here: reusing either of the
+  // other two is the exact mistake this parser exists to prevent.
+  const DESPACHO_ACT_CA =
+    '5ac601efbf2b35c21ddb599c8dd6105d8338e9b70e28f9cdeda14b0ac76d9f5b5d0854e21a690a52d79606f27244dfe15e2a3aefdb490d11'
+  const SENTENCA_ACT_CA =
+    '186624e9614eb86751947c70685b740a2b40cba9f30b1169eb53e6a5e2fd9c67c3e1118dc739fd236902b4fa7f030d2df8a04e5c87a6dcbd'
+
+  it('reads the download form off a real DESPACHO page', () => {
+    const form = parseActPdfForm(despachoPage)
+    expect(form).not.toBeNull()
+    expect(form!.formId).toBe('j_id42')
+    expect(form!.submitParam).toBe('j_id42:downloadPDF')
+    expect(form!.viewState).toBe('j_id4')
+    expect(form!.ca).toBe(DESPACHO_ACT_CA)
+    expect(form!.ca).toHaveLength(112)
+    expect(form!.idProcDocBin).toBe('11872334')
+    expect(form!.actionUrl).toBe(
+      'https://pjett.trf5.jus.br/pjeconsulta/ConsultaPublica/DetalheProcessoConsultaPublica/documentoSemLoginHTML.seam',
+    )
+  })
+
+  it('reads a different ViewState, ca and idProcDocBin off a real SENTENÇA page', () => {
+    const form = parseActPdfForm(sentencaPage)
+    expect(form).not.toBeNull()
+    expect(form!.viewState).toBe('j_id3')
+    expect(form!.ca).toBe(SENTENCA_ACT_CA)
+    expect(form!.idProcDocBin).toBe('11872210')
+  })
+
+  it('takes the JSF form id from the page instead of assuming j_id42', () => {
+    const renamed = despachoPage.replaceAll('j_id42', 'j_id99')
+    const form = parseActPdfForm(renamed)
+    expect(form!.formId).toBe('j_id99')
+    expect(form!.submitParam).toBe('j_id99:downloadPDF')
+  })
+
+  it('returns null for an act page that offers no download at all', () => {
+    expect(parseActPdfForm('<html><body><div class="folha">ato judicial</div></body></html>')).toBeNull()
   })
 })
 

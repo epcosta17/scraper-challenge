@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio'
 import { HttpClient, decodeLatin1 } from '../http/client.ts'
 import { fetchClassifiedPdf } from './report.ts'
-import { documentBinUrl, documentHtmlUrl } from './urls.ts'
+import { HOST, documentBinUrl, documentHtmlUrl } from './urls.ts'
 import type { BinaryDocumentRef, HtmlDocumentRef } from './detail.ts'
 
 export type DownloadResult =
@@ -46,6 +46,80 @@ export function filenameFromContentDisposition(headers: Headers): string | null 
   const raw = headers.get('content-disposition')
   if (!raw) return null
   return FILENAME_RE.exec(raw)?.[1]?.trim() || null
+}
+
+/**
+ * Everything the POST that downloads a judicial act as a PDF needs, read
+ * off the act page itself (see `parseActPdfForm`).
+ */
+export interface ActPdfForm {
+  /**
+   * The JSF-generated form id — `j_id42` on both fixtures, but generated
+   * per page and never to be hardcoded; the same discipline `session.ts`
+   * applies to the search form's submit parameter. Goes into the body
+   * twice over: once as JSF's own `<formId>=<formId>` marker, and once as
+   * the prefix of `submitParam`.
+   */
+  formId: string
+  /** The form's own action, resolved absolute against `HOST`. */
+  actionUrl: string
+  /** The command key the trigger spells out, `<formId>:downloadPDF`. */
+  submitParam: string
+  /** `javax.faces.ViewState` — `j_id4` on one fixture, `j_id3` on the other. */
+  viewState: string
+  /**
+   * The act's own 112-hex token, out of the trigger. Neither the case's
+   * 48-hex `ca` nor the (also different) one in the act page's URL will do
+   * here; like both of those it is session-bound, so this POST has to run
+   * on the same client, and the same cookie jar, that fetched the page.
+   */
+  ca: string
+  /** The act's binary id — captured nowhere else in this scraper. */
+  idProcDocBin: string
+}
+
+// The act page's download form and, inside it, the hidden ViewState and the
+// `jsfcljs(...)` trigger the "Gerar PDF" anchor fires. Read with regular
+// expressions rather than a DOM walk for the same reason `session.ts` does:
+// the interesting half is JavaScript inside an attribute, not markup.
+const ACT_FORM_TAG_RE = /<form\b[^>]*\baction="[^"]*documentoSemLoginHTML\.seam[^"]*"[^>]*>/i
+const FORM_ID_RE = /\bid="([^"]+)"/
+const FORM_ACTION_RE = /\baction="([^"]+)"/
+const VIEW_STATE_RE = /name="javax\.faces\.ViewState"[^>]*\bvalue="([^"]*)"/
+const DOWNLOAD_TRIGGER_RE =
+  /\{\s*'([^']+):downloadPDF'\s*:\s*'[^']*'\s*,\s*'ca'\s*:\s*'([0-9a-f]+)'\s*,\s*'idProcDocBin'\s*:\s*'(\d+)'/
+
+/**
+ * Parses the "Gerar PDF" form out of a judicial-act page.
+ *
+ * Returns `null` — cleanly, not by throwing — when the page carries no such
+ * form: an act served without a download offer is a legitimate shape, and
+ * the caller must still keep the act's text (see `downloadDocument`). Every
+ * field is taken from the page on every request: all four are per-page
+ * values, and three of them (`viewState`, `ca`, `idProcDocBin`) genuinely
+ * differ between the two committed fixtures.
+ */
+export function parseActPdfForm(html: string): ActPdfForm | null {
+  const tag = ACT_FORM_TAG_RE.exec(html)
+  if (!tag) return null
+
+  const formId = FORM_ID_RE.exec(tag[0])?.[1]
+  const action = FORM_ACTION_RE.exec(tag[0])?.[1]
+  // Scoped to what follows the opening tag, so a page that ever grows a
+  // second form can't have this one's ViewState read out of that one.
+  const insideForm = html.slice(tag.index + tag[0].length)
+  const viewState = VIEW_STATE_RE.exec(insideForm)?.[1]
+  const trigger = DOWNLOAD_TRIGGER_RE.exec(insideForm)
+  if (!formId || !action || !viewState || !trigger) return null
+
+  return {
+    formId,
+    actionUrl: action.startsWith('http') ? action : HOST + action,
+    submitParam: `${trigger[1]}:downloadPDF`,
+    viewState,
+    ca: trigger[2]!,
+    idProcDocBin: trigger[3]!,
+  }
 }
 
 /**
