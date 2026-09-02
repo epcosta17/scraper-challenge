@@ -581,14 +581,21 @@ const movements = caseFile
             : ''
 
         if (job.state === 'done') {
-          // The page around this banner is server-rendered: the documents, the
-          // parties, the capture counts. Telling somebody to reload in order
-          // to see what they just asked for is asking them to do the last
-          // step by hand, so the page fetches itself instead.
+          // The page around this banner is server-rendered — the documents,
+          // the parties, the capture counts — so it fetches itself rather than
+          // telling somebody to reload in order to see what they just asked
+          // for.
+          //
+          // To the case's own URL, though, not to this one. `location.reload()`
+          // reloads the address *with* `?trabajo=…` still on it, which brings
+          // the banner back, which finds the same finished job, which reloads
+          // again: a loop with no exit. Dropping the parameters is what ends
+          // the errand — and `replace` keeps the redirect out of the history,
+          // so Back goes where the reader came from.
           text.textContent = 'Recaptura terminada, actualizando…'
           banner.classList.add('queued--done')
           banner.querySelector('.dot')?.classList.remove('dot--ok')
-          location.reload()
+          location.replace(location.pathname)
           return
         } else if (job.state === 'failed') {
           text.textContent = `La recaptura falló: ${job.error ?? 'sin motivo registrado'}`
