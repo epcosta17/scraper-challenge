@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio'
 import type { PartyInput } from '@pje/core'
 import { HttpClient, decodeLatin1 } from '../http/client.ts'
 import { HOST, detailUrl } from './urls.ts'
+import { fetchAllParties } from './parties-pages.ts'
 
 export interface BinaryDocumentRef {
   kind: 'binary'
@@ -465,17 +466,31 @@ const ACCESS_DENIED_MARKER = 'Acesso negado!'
  * The caller is expected to re-derive `ca` through the search bridge and
  * retry once when `kind` comes back `'invalid'`.
  */
-export async function fetchDetail(client: HttpClient, ca: string): Promise<DetailResult> {
+export async function fetchDetail(
+  client: HttpClient,
+  ca: string,
+  opts: { followPartyPages?: boolean } = {},
+): Promise<DetailResult> {
   const res = await client.request(detailUrl(ca))
   const html = decodeLatin1(res.body)
 
   if (CASE_NUMBER_RE.test(html)) {
     const { parties, ativoTotal, passivoTotal } = parseParties(html)
+    // The page shows ten participants per polo and hides the rest behind a
+    // Datascroller. Following it is what turns "20 of 50 parties, recorded as
+    // a failure" into the fifty the case actually has; it costs one request
+    // per page beyond the first, and nothing at all when the lists already
+    // fit. Left switchable so a caller that only wants the documents — or a
+    // test with a stub client — can decline the extra round trips.
+    const all = opts.followPartyPages === false
+      ? { parties }
+      : await fetchAllParties(client, ca, html, { ativo: ativoTotal, passivo: passivoTotal })
+
     return {
       kind: 'valid',
       documents: parseDetailPage(html),
       processFields: parseProcessFields(html),
-      parties,
+      parties: all.parties,
       partiesAtivoTotal: ativoTotal,
       partiesPassivoTotal: passivoTotal,
       movementsTotal: parseMovementsTotal(html),
