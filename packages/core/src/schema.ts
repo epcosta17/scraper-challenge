@@ -138,6 +138,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   progress_done              INTEGER NOT NULL DEFAULT 0,
   progress_total             INTEGER,
   progress_total_is_estimate INTEGER NOT NULL DEFAULT 0,
+  -- What the job is doing right this second, in the engine's own words
+  -- ("reading the case file"). A counter alone cannot say this: a single case
+  -- spends most of its time before the first document is even known, and a row
+  -- stuck at 0 with no total reads as a run that has hung. Cleared when the
+  -- job stops running, because a stage is only true while it is happening.
+  stage                      TEXT,
   heartbeat_at               TEXT
 );
 
@@ -181,6 +187,7 @@ const COLUMN_MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: str
   { table: 'jobs', column: 'progress_total', ddl: 'ALTER TABLE jobs ADD COLUMN progress_total INTEGER' },
   { table: 'jobs', column: 'progress_total_is_estimate', ddl: 'ALTER TABLE jobs ADD COLUMN progress_total_is_estimate INTEGER NOT NULL DEFAULT 0' },
   { table: 'jobs', column: 'heartbeat_at', ddl: 'ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT' },
+  { table: 'jobs', column: 'stage', ddl: 'ALTER TABLE jobs ADD COLUMN stage TEXT' },
 ]
 
 export function migrateSchema(db: Db): void {

@@ -145,6 +145,13 @@ export interface Job {
   /** Counts for the *current* attempt; reset whenever the job re-enters the queue. */
   progress: JobProgress
   /**
+   * What the job is doing right now, in the engine's own words, or null when
+   * it is not running. It answers the question a counter cannot: a single
+   * case spends most of its time before the first document is known, and a
+   * row sitting at 0 with no total is indistinguishable from a hung one.
+   */
+  stage: string | null
+  /**
    * The last sign of life from the worker holding this job — the lease
    * `reclaimStaleJobs` reads to tell a job still being worked on from one
    * stranded by a worker that died. Null unless the job is running.

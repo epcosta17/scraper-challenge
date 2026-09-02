@@ -139,8 +139,36 @@ describe('the deep_case handler', () => {
       },
     }))
     expect(published[0]).toEqual({ done: 0, total: null, totalIsEstimate: false })
-    expect(published[1]).toEqual({ done: 0, total: 3 })
+    // The stage is cleared as the total arrives: from here on the count says
+    // more than any phrase, and a stage rewritten per document would flicker.
+    expect(published[1]).toEqual({ done: 0, total: 3, stage: null })
     expect(published.map((p) => p.done)).toEqual([0, 0, 1, 2])
+  })
+
+  it('names the step it is on, for the stretch before any document is known', async () => {
+    await run('deep_case', { idProcessoTrf: 7 }, stubEngine({
+      deepCase: async (_d, _t, o: DeepOptions = {}) => {
+        // The real order for one case. Everything up to `documents` happens
+        // with the counter at zero and no total, which is exactly the stretch
+        // that reads as a hung job when nothing says otherwise.
+        o.onStep?.({ kind: 'summary_pdf', ref: '7' })
+        o.onStep?.({ kind: 'summary_pdf_retry', ref: '7', attempt: 2, of: 3, status: 429 })
+        o.onStep?.({ kind: 'detail_key', ref: '7', source: 'search' })
+        o.onStep?.({ kind: 'case_file', ref: '7' })
+        o.onStep?.({ kind: 'case_file_ok', ref: '7', documentCount: 3 })
+        return { kind: 'done', idProcessoTrf: 7, number: 'N', documentsStored: 0, documentsSkipped: 0, documentsFailed: 0 }
+      },
+    }))
+    expect(published.map((p) => p.stage)).toEqual([
+      undefined,
+      'fetching the summary PDF',
+      // A retry says so rather than looking like a stall: still working, and
+      // the wait has a reason.
+      'retrying the summary PDF (2 of 3, HTTP 429)',
+      'resolving the detail key through the search bridge',
+      'reading the case file',
+      'the case file lists 3 documents',
+    ])
   })
 
   it('fails the job when the case failed — one case is the whole job', async () => {

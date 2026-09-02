@@ -35,6 +35,7 @@ interface Row {
   progress_done: number
   progress_total: number | null
   progress_total_is_estimate: number
+  stage: string | null
   heartbeat_at: string | null
 }
 
@@ -54,6 +55,7 @@ const toJob = (r: Row): Job => ({
     // SQLite has no boolean type; the column is the 0/1 integer it stores.
     totalIsEstimate: r.progress_total_is_estimate !== 0,
   },
+  stage: r.stage,
   heartbeatAt: r.heartbeat_at,
 })
 
@@ -116,7 +118,8 @@ export function claimNextJob(db: Db, opts: { types?: readonly JobType[] } = {}):
            started_at = datetime('now'),
            finished_at = NULL,
            heartbeat_at = datetime('now'),
-           progress_done = 0
+           progress_done = 0,
+           stage = NULL
      WHERE id = (
        SELECT id FROM jobs
         WHERE status = 'pending'${typeFilter}
@@ -141,7 +144,7 @@ export function completeJob(db: Db, id: number): void {
   db.prepare(`
     UPDATE jobs
        SET status = 'done', finished_at = datetime('now'), error = NULL,
-           heartbeat_at = NULL
+           stage = NULL, heartbeat_at = NULL
      WHERE id = ?
   `).run(id)
 }
@@ -184,6 +187,7 @@ export function failJob(
            error       = @error,
            started_at  = CASE WHEN attempts < @maxAttempts THEN NULL ELSE started_at END,
            finished_at = CASE WHEN attempts < @maxAttempts THEN NULL ELSE datetime('now') END,
+           stage         = NULL,
            heartbeat_at  = NULL,
            progress_done = CASE WHEN attempts < @maxAttempts THEN 0 ELSE progress_done END
      WHERE id = @id
@@ -232,6 +236,11 @@ export interface JobProgressUpdate {
   done: number
   total?: number | null
   totalIsEstimate?: boolean
+  /**
+   * What the job is doing right now, in the engine's own words. Omitted
+   * leaves whatever stage is on file; an explicit `null` clears it.
+   */
+  stage?: string | null
 }
 
 /**
@@ -271,6 +280,7 @@ export function updateJobProgress(
   const sets = ['progress_done = @done', "heartbeat_at = datetime('now')"]
   if (p.total !== undefined) sets.push('progress_total = @total')
   if (p.totalIsEstimate !== undefined) sets.push('progress_total_is_estimate = @estimate')
+  if (p.stage !== undefined) sets.push('stage = @stage')
   db.prepare(`
     UPDATE jobs SET ${sets.join(', ')}
      WHERE id = @id AND status = 'running'
@@ -280,6 +290,7 @@ export function updateJobProgress(
     done: p.done,
     total: p.total ?? null,
     estimate: p.totalIsEstimate === true ? 1 : 0,
+    stage: p.stage ?? null,
     attempts: expectedAttempts ?? null,
   })
 }
@@ -337,6 +348,7 @@ export function releaseJob(db: Db, id: number, error: string): boolean {
            attempts = MAX(0, attempts - 1),
            started_at = NULL,
            finished_at = NULL,
+           stage = NULL,
            heartbeat_at = NULL,
            progress_done = 0,
            error = @error
@@ -389,6 +401,7 @@ export function reclaimStaleJobs(
            started_at  = CASE WHEN attempts < @maxAttempts THEN NULL ELSE started_at END,
            finished_at = CASE WHEN attempts < @maxAttempts THEN NULL ELSE datetime('now') END,
            progress_done = CASE WHEN attempts < @maxAttempts THEN 0 ELSE progress_done END,
+           stage = NULL,
            heartbeat_at = NULL,
            error = @error
      WHERE status = 'running'

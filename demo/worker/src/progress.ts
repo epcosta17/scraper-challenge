@@ -39,7 +39,16 @@ export interface ProgressPublisherOptions {
  * knows it, and only at the start — so without this the second write would
  * silently mean "total unchanged" to `updateJobProgress` and this publisher
  * would depend on that. Carrying it explicitly keeps each write a complete
- * statement of where the job is.
+ * statement of where the job is. The stage is carried the same way.
+ *
+ * The one thing that escapes the rate limit is a *change* of stage. The limit
+ * exists for counts, which arrive thousands of times and whose intermediate
+ * values nobody wants; a stage arrives perhaps six times in a whole case and
+ * each one has to survive for as long as its step takes — which is the entire
+ * reason it exists, since a step can run for ten seconds with the count
+ * frozen at zero. Holding one until the next step would deliver it only once
+ * it had stopped being true. A repeat of the stage already on file is not a
+ * change and stays throttled like anything else.
  */
 export function createProgressPublisher(opts: ProgressPublisherOptions): ProgressPublisher {
   const minIntervalMs = opts.minIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS
@@ -49,6 +58,7 @@ export function createProgressPublisher(opts: ProgressPublisherOptions): Progres
   let lastWriteAt = Number.NEGATIVE_INFINITY
   let total: number | null | undefined
   let totalIsEstimate: boolean | undefined
+  let stage: string | null | undefined
 
   const send = (p: JobProgressUpdate): void => {
     held = null
@@ -60,11 +70,15 @@ export function createProgressPublisher(opts: ProgressPublisherOptions): Progres
     publish(p) {
       if (p.total !== undefined) total = p.total
       if (p.totalIsEstimate !== undefined) totalIsEstimate = p.totalIsEstimate
+      const stageChanged = p.stage !== undefined && p.stage !== stage
+      if (p.stage !== undefined) stage = p.stage
+
       const full: JobProgressUpdate = { done: p.done }
       if (total !== undefined) full.total = total
       if (totalIsEstimate !== undefined) full.totalIsEstimate = totalIsEstimate
+      if (stage !== undefined) full.stage = stage
 
-      if (now() - lastWriteAt >= minIntervalMs) send(full)
+      if (stageChanged || now() - lastWriteAt >= minIntervalMs) send(full)
       else held = full
     },
 

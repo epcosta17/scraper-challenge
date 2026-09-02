@@ -71,4 +71,42 @@ describe('createProgressPublisher', () => {
     publisher.flush()
     expect(writes).toEqual([])
   })
+
+  it('carries the stage through, and never holds a change of it back', () => {
+    const written: JobProgressUpdate[] = []
+    let clock = 0
+    const pub = createProgressPublisher({
+      write: (p) => { written.push(p) },
+      minIntervalMs: 250,
+      now: () => clock,
+    })
+
+    pub.publish({ done: 0, total: null })
+    clock = 10
+    // Inside the interval, so the count alone would be held. The stage is not
+    // a count: these arrive maybe six times in a whole case, and each one is
+    // the answer to "is this thing still alive?" for however long the step
+    // takes. Holding one back until the *next* step is exactly as useless as
+    // not sending it — by then it is describing the past.
+    pub.publish({ done: 0, stage: 'fetching the summary PDF' })
+    expect(written).toHaveLength(2)
+    expect(written[1]).toMatchObject({ stage: 'fetching the summary PDF' })
+
+    // A repeat of the same stage is not news, and goes back to being throttled
+    // like any other count.
+    clock = 20
+    pub.publish({ done: 1, stage: 'fetching the summary PDF' })
+    expect(written).toHaveLength(2)
+
+    // A stage set once keeps being reported with later counts, so every write
+    // is a complete statement of where the job is.
+    clock = 400
+    pub.publish({ done: 2 })
+    expect(written[2]).toMatchObject({ done: 2, stage: 'fetching the summary PDF' })
+
+    // And clearing it is a change like any other: it goes out at once.
+    clock = 410
+    pub.publish({ done: 2, stage: null })
+    expect(written[3]).toMatchObject({ stage: null })
+  })
 })

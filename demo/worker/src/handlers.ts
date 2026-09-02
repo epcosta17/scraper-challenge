@@ -8,6 +8,7 @@ import {
 } from '@pje/scraper'
 import { parseCrawlPayload, parseDeepCasePayload, parseDeepRangePayload } from './payloads.ts'
 import { JobPayloadError } from './errors.ts'
+import { stageOf } from './stages.ts'
 
 /**
  * The scraper entry points a handler calls, named so they can be replaced in
@@ -125,7 +126,10 @@ async function runOneCase(deps: HandlerDeps, ctx: HandlerContext, target: DeepTa
   let done = 0
   const outcome = await deps.engine.deepCase({ client: deps.client, db: deps.db, blobs: deps.blobs }, target, {
     onStep: (e) => {
-      if (e.kind === 'documents') ctx.publish({ done, total: e.total })
+      // The stage is what carries this job between the claim and the first
+      // document, which on one case is most of the wall clock.
+      if (e.kind === 'documents') ctx.publish({ done, total: e.total, stage: null })
+      else ctx.publish({ done, stage: stageOf(e) })
       ctx.reporter.deepStep(e)
     },
     onDocumentProgress: (p) => {
