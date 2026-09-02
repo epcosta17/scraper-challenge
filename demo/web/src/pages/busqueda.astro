@@ -1,32 +1,36 @@
 ---
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
-import { data, PORTAL_ROW_LIMIT } from '../data/index.ts'
-import type { SearchFilters } from '../data/index.ts'
+import { data, portal, PORTAL_ROW_LIMIT } from '../data/index.ts'
+import type { SearchFilters } from '@pje/scraper'
 import { formatInt, formatSeconds } from '../lib/format.ts'
 
 /**
- * The eight criteria of the TRF5's public form, answered against the captured
- * acervo — plus the one the portal has not got, the full text of every
- * document we downloaded.
+ * The TRF5's public search form, submitted to the TRF5.
  *
- * The form is the design's, field for field. What it searches is not: the
- * portal cuts every query at `PORTAL_ROW_LIMIT` rows inside its own
- * server-side query, with no page two, so it cannot answer a question about a
- * corpus. The crawl is what buys coverage; this is the index over what the
- * crawl brought back — which also means a criterion here can only be as good
- * as what was captured, and the hints below say so where the two differ.
+ * This screen asks the court what it has; the main screen answers what we have
+ * captured. Keeping those two apart is the whole point — a search that quietly
+ * answered from our own database would tell you a case does not exist when all
+ * it means is that nobody has crawled it yet.
+ *
+ * So the criteria are the portal's, with the portal's own rules, and they are
+ * enforced before a request goes out because several of them are silently
+ * ignored rather than rejected by the server: a party name of one token, an
+ * OAB state with no number. There is no free-text field here, because the
+ * portal has none — full text over what we downloaded is a different question
+ * and lives in `find` on the CLI.
+ *
+ * A result is thin by nature: the portal's AJAX response carries a case
+ * number, its internal id and a `ca` token, and nothing else. So each hit is
+ * an address, and what this page offers for it depends on whether we already
+ * hold it — open the case file, or queue its capture.
  *
  * Every criterion lives in the URL under the name the CLI gives it
- * (`--party` → `?party=`), so a result can be pasted to somebody else and
- * reloaded a week later.
+ * (`--party` → `?party=`), so a result can be pasted to somebody else.
  */
-const PAGE_SIZE = 10
-
 const params = Astro.url.searchParams
 const raw = (key: string): string => (params.get(key) ?? '').trim()
 
-const text = raw('q')
 const filters: SearchFilters = {
   number: raw('number'),
   from: raw('from'),
@@ -41,19 +45,14 @@ const filters: SearchFilters = {
   reference: raw('reference'),
 }
 
-const requestedPage = Number.parseInt(params.get('p') ?? '1', 10)
-const [result, classes, oabStates] = await Promise.all([
-  data.search({ text, filters }, Number.isFinite(requestedPage) ? requestedPage : 1, PAGE_SIZE),
-  data.caseClasses(),
-  data.oabStates(),
-])
-
-const first = result.hits.length === 0 ? 0 : (result.page - 1) * result.pageSize + 1
-const last = first === 0 ? 0 : first + result.hits.length - 1
+/** Only what was actually filled in is sent; an empty string is not a criterion. */
+const stripped: SearchFilters = Object.fromEntries(
+  Object.entries(filters).filter(([key, value]) =>
+    value !== '' && !(key === 'documentType' && filters.document === '')),
+) as SearchFilters
 
 /** Only the criteria that were actually filled in ever reach the URL. */
 const stated: ReadonlyArray<readonly [string, string]> = [
-  ['q', text],
   ['number', filters.number ?? ''],
   ['from', filters.from ?? ''],
   ['to', filters.to ?? ''],
@@ -68,6 +67,22 @@ const stated: ReadonlyArray<readonly [string, string]> = [
 
 const asked = stated.filter(([, value]) => value !== '')
 
+/**
+ * The portal is only asked once something has been filled in. An empty form
+ * submitted to the TRF5 would either be refused or return whatever it feels
+ * like, and either way it is a request made on nobody's behalf.
+ */
+const outcome = asked.length === 0 ? null : await portal.run(stripped)
+
+/**
+ * What we already hold, for the numbers that came back. One lookup for the
+ * whole page rather than one per row, and it is what decides whether a hit
+ * offers a case file or a capture.
+ */
+const held = outcome !== null && outcome.ok
+  ? await data.casesByNumber(outcome.hits.map((h) => h.number))
+  : new Map<string, { className: string; organ: string | null }>()
+
 const hrefWith = (change: (p: URLSearchParams) => void): string => {
   const next = new URLSearchParams()
   for (const [key, value] of asked) next.set(key, value)
@@ -77,9 +92,6 @@ const hrefWith = (change: (p: URLSearchParams) => void): string => {
   const query = next.toString()
   return query === '' ? '/busqueda' : `/busqueda?${query}`
 }
-
-const pageHref = (n: number): string =>
-  hrefWith((p) => { p.delete('p'); if (n > 1) p.set('p', String(n)) })
 
 /** Dropping a criterion drops what only made sense next to it. */
 const withoutHref = (key: string): string =>
@@ -92,7 +104,6 @@ const withoutHref = (key: string): string =>
 
 /** The chips over the results: what is narrowing them, and how to stop it. */
 const CHIP_LABEL: Record<string, string> = {
-  q: 'texto',
   number: 'nº',
   from: 'desde',
   to: 'hasta',
@@ -115,20 +126,8 @@ const chips = asked
     href: withoutHref(key),
   }))
 
-const invalid = (field: string): 'true' | undefined =>
-  result.errorField === field ? 'true' : undefined
-
-const MATCHED_LABEL = {
-  case: 'datos del proceso',
-  party: 'partes',
-  document: 'documentos',
-} as const
-
-const SYNTAX = [
-  ['"em nome próprio"', 'una frase exacta, en ese orden'],
-  ['prescri*', 'un prefijo: prescrição, prescrito, prescricional'],
-  ['sentença OR acórdão', 'cualquiera de los dos; también AND y NOT'],
-]
+const failed = outcome !== null && !outcome.ok ? outcome : null
+const found = outcome !== null && outcome.ok ? outcome : null
 ---
 
 <Base
@@ -149,24 +148,6 @@ const SYNTAX = [
     <aside class="split__aside form-col">
       <form class="form" method="get" action="/busqueda">
         <div class="field">
-          <label class="field-label" for="f-q">CONSULTA</label>
-          <input
-            class="input"
-            id="f-q"
-            name="q"
-            value={text}
-            aria-invalid={invalid('text')}
-            placeholder="anuidade conselho profissional"
-          />
-          <p class="hint">
-            Texto completo: el número y la clase, el órgano, los nombres de las partes y el
-            contenido de cada documento. Sin acentos también encuentra —
-            <span class="mono">execucao</span> y <span class="mono">execução</span> son el mismo
-            término para el índice.
-          </p>
-        </div>
-
-        <div class="field">
           <label class="field-label" for="f-number">Nº DE EXPEDIENTE</label>
           <input
             class="input input--mono"
@@ -185,7 +166,7 @@ const SYNTAX = [
               class="input input--mono"
               name="from"
               value={filters.from}
-              aria-invalid={invalid('from')}
+              aria-invalid={failed?.kind === 'invalid' ? 'true' : undefined}
               aria-label="Desde"
               placeholder="01/08/2026"
             />
@@ -193,7 +174,7 @@ const SYNTAX = [
               class="input input--mono"
               name="to"
               value={filters.to}
-              aria-invalid={invalid('to')}
+              aria-invalid={failed?.kind === 'invalid' ? 'true' : undefined}
               aria-label="Hasta"
               placeholder="31/08/2026"
             />
@@ -207,25 +188,15 @@ const SYNTAX = [
 
         <div class="field">
           <label class="field-label" for="f-class">CLASE JUDICIAL</label>
-          <div class="picker">
-            <select class="input" id="f-class" name="class">
-              <option value="">Cualquiera</option>
-              {
-                classes.map((c) => (
-                  <option value={c.name} selected={c.name === filters.class}>
-                    {c.name} ({formatInt(c.caseCount)})
-                  </option>
-                ))
-              }
-            </select>
-            <Icon name="chevron-down" size={13} />
-          </div>
+          <input
+            class="input"
+            id="f-class"
+            name="class"
+            value={filters.class}
+            placeholder="APELAÇÃO CÍVEL"
+          />
           <p class="hint">
-            {
-              classes.length === 0
-                ? 'No hay ningún expediente capturado todavía.'
-                : `${formatInt(classes.length)} ${classes.length === 1 ? 'clase presente' : 'clases presentes'} en el acervo. El catálogo del CNJ tiene 132: aquí solo pueden ofrecerse las que se han capturado.`
-            }
+            Como lo escribe el portal. Coincidencia parcial: <span class="mono">APELA</span> vale.
           </p>
         </div>
 
@@ -295,23 +266,19 @@ const SYNTAX = [
               placeholder="17669"
             />
             <div class="picker">
-              <select class="input" name="oab-state" aria-label="Estado de la OAB" aria-invalid={invalid('oabState')}>
-                <option value="">UF</option>
-                {
-                  oabStates.map((uf) => (
-                    <option value={uf} selected={uf === filters.oabState}>{uf}</option>
-                  ))
-                }
-              </select>
+              <input
+                class="input input--mono input--uf"
+                name="oab-state"
+                value={filters.oabState}
+                maxlength="2"
+                aria-label="Estado de la OAB"
+                placeholder="UF"
+              />
               <Icon name="chevron-down" size={13} />
             </div>
           </div>
           <p class="hint">
-            {
-              oabStates.length === 0
-                ? 'Ningún interviniente capturado tiene inscripción de OAB: el número no encontrará nada todavía.'
-                : 'El estado sin número se ignora en silencio en el portal: aquí se exigen ambos.'
-            }
+            El portal ignora el estado en silencio si va sin número, así que aquí se exigen ambos.
           </p>
         </div>
 
@@ -337,48 +304,67 @@ const SYNTAX = [
       </form>
 
       <section class="aside-block">
-        <h2 class="field-label">CÓMO SE ESCRIBE LA CONSULTA</h2>
+        <h2 class="field-label">REGLAS DEL PORTAL</h2>
         <dl class="syntax">
-          {
-            SYNTAX.map(([example, meaning]) => (
-              <div class="syntax__row">
-                <dt class="mono">{example}</dt>
-                <dd>{meaning}</dd>
-              </div>
-            ))
-          }
+          <div class="syntax__row">
+            <dt>Parte y abogado</dt>
+            <dd>al menos dos nombres; con uno solo el servidor rechaza la consulta</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>OAB</dt>
+            <dd>el estado no filtra sin el número, y el portal no avisa: lo ignora</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>Fechas</dt>
+            <dd><span class="mono">dd/mm/aaaa</span>, sobre la fecha de autuación</dd>
+          </div>
+          <div class="syntax__row">
+            <dt>Nº y referencia</dt>
+            <dd>exactos: el portal no acepta parciales ni comodines</dd>
+          </div>
         </dl>
+        <p class="hint">
+          Para buscar dentro del texto de los documentos que ya bajamos, eso es otra pregunta y no
+          la contesta el portal: <span class="mono">npm run scraper -- find "…"</span>.
+        </p>
       </section>
     </aside>
 
     <div class="split__main results">
-      <section class="cap" role="note" aria-label="Por qué esta pantalla no consulta el portal">
+      <section class="cap" role="note" aria-label="El tope de filas del portal">
         <Icon name="triangle-alert" size={16} />
         <div>
           <p class="cap__title">
-            El portal corta toda consulta en {formatInt(PORTAL_ROW_LIMIT)} filas. Por eso se busca aquí.
+            El portal corta toda consulta en {formatInt(PORTAL_ROW_LIMIT)} filas.
           </p>
           <p class="cap__body">
-            El formulario público del TRF5 nunca devuelve más de {formatInt(PORTAL_ROW_LIMIT)}{' '}
-            resultados y no ofrece paginación: el límite está en la consulta al servidor, no en la
-            vista, así que ningún parámetro, página ni orden lo salva. Estos criterios son los
-            suyos, pero van contra el acervo capturado, que no tiene ese tope — y que solo contiene
-            lo que <span class="mono">crawl</span> y <span class="mono">deep</span> ya trajeron.
+            No es una página de {formatInt(PORTAL_ROW_LIMIT)}: el límite está dentro de la consulta
+            que el servidor ejecuta, no en la vista, así que no hay página dos y ningún parámetro,
+            orden ni desplazamiento lo salva. Si tu búsqueda sale recortada, la única salida es
+            afinarla. Para recorrer el acervo entero está{' '}
+            <span class="mono">crawl</span>, que va por id interno y no pasa por este formulario.
           </p>
         </div>
       </section>
 
-      {result.error !== null && <p class="feedback feedback--bad">{result.error}</p>}
+      {
+        failed !== null && (
+          <p class="feedback feedback--bad">
+            {failed.error}
+          </p>
+        )
+      }
 
       <header class="section-head">
-        <h2 class="section-head__title">RESULTADOS DEL ACERVO</h2>
+        <h2 class="section-head__title">RESULTADOS DEL PORTAL</h2>
         {
-          asked.length > 0 && result.error === null && (
+          found !== null && (
             <p class="section-head__aside mono num">
-              {result.total === 0
+              {found.hits.length === 0
                 ? '0 resultados'
-                : `${formatInt(first)}–${formatInt(last)} de ${formatInt(result.total)}`}
-              {' · '}{formatSeconds(result.elapsedMs)}
+                : `${formatInt(found.hits.length)} ${found.hits.length === 1 ? 'resultado' : 'resultados'}`}
+              {found.capped && ' · recortado'}
+              {' · '}{formatSeconds(found.elapsedMs)}
             </p>
           )
         }
@@ -404,98 +390,80 @@ const SYNTAX = [
       }
 
       {
-        asked.length === 0 ? (
+        asked.length === 0 && (
           <p class="feedback">
-            Rellena cualquiera de los criterios de la izquierda. Se combinan entre sí: cada uno que
-            añadas estrecha el resultado del anterior.
+            Rellena cualquiera de los criterios de la izquierda y se enviarán al formulario público
+            del TRF5, tal cual. Nada se consulta hasta entonces: una consulta vacía sería una
+            petición al tribunal que nadie ha pedido.
           </p>
-        ) : result.total === 0 && result.error === null ? (
+        )
+      }
+
+      {
+        found !== null && found.hits.length === 0 && (
           <div class="feedback">
-            <p>Ningún expediente capturado cumple {chips.length === 1 ? 'ese criterio' : 'esos criterios'} a la vez.</p>
-            {
-              filters.number !== '' && (
-                <p class="miss">
-                  <span class="mono">{filters.number}</span> no está en el acervo. Si existe en el
-                  portal, todavía no se ha capturado:{' '}
-                  <a href={`/procesos?tipo=deep_case&objetivo=${encodeURIComponent(filters.number ?? '')}`}>
-                    encolar su captura
-                  </a>.
-                </p>
-              )
-            }
+            <p>
+              El portal no devolvió ningún expediente para{' '}
+              {chips.length === 1 ? 'ese criterio' : 'esos criterios'}. La consulta sí se ejecutó:
+              esto es un cero del tribunal, no un fallo.
+            </p>
           </div>
-        ) : null
+        )
+      }
+
+      {
+        found !== null && found.capped && (
+          <p class="feedback feedback--warn">
+            El portal avisó de que recortó el resultado en {formatInt(PORTAL_ROW_LIMIT)} filas. Hay
+            más expedientes que cumplen estos criterios y no hay forma de pedirlos: añade un
+            criterio para estrechar la consulta.
+          </p>
+        )
       }
 
       <ul>
         {
-          result.hits.map((h) => (
-            <li class="hit">
-              <a class="hit__head" href={`/expedientes/${h.number}`}>
-                <span class="hit__num mono">{h.number}</span>
-                <span class="hit__class">{h.className}</span>
-                <span class="hit__organ">{h.organ ?? '—'}</span>
-              </a>
-
-              {
-                h.snippet !== null && (
-                  <p class="snippet">
-                    {h.snippet.segments.map((seg) =>
-                      seg.hit ? <mark class="snippet__hit">{seg.text}</mark> : <span>{seg.text}</span>
-                    )}
-                  </p>
-                )
-              }
-
-              <p class="hit__meta">
-                <span>
-                  {
-                    h.matchedIn.length === 0
-                      ? 'cumple los criterios del formulario'
-                      : `coincide en ${h.matchedIn.map((m) => MATCHED_LABEL[m]).join(' · ')}`
-                  }
-                  {h.distributedAt !== null && <span class="mono"> · distribuido el {h.distributedAt}</span>}
-                </span>
+          (found?.hits ?? []).map((h) => {
+            const mine = held.get(h.number)
+            return (
+              <li class="hit">
                 {
-                  h.snippet !== null && (
-                    <a class="hit__doc" href={`/documentos/${h.snippet.documentId}`} target="_blank" rel="noopener">
-                      abrir el documento
+                  mine !== undefined ? (
+                    <a class="hit__head" href={`/expedientes/${h.number}`}>
+                      <span class="hit__num mono">{h.number}</span>
+                      <span class="hit__class">{mine.className}</span>
+                      <span class="hit__organ">{mine.organ ?? '—'}</span>
                     </a>
+                  ) : (
+                    <div class="hit__head hit__head--plain">
+                      <span class="hit__num mono">{h.number}</span>
+                      <span class="hit__class hit__class--none">sin capturar</span>
+                      <span class="hit__organ" />
+                    </div>
                   )
                 }
-              </p>
-            </li>
-          ))
+
+                <p class="hit__meta">
+                  <span class="mono">id {formatInt(h.idProcessoTrf)}</span>
+                  {
+                    mine !== undefined
+                      ? <a class="hit__doc" href={`/expedientes/${h.number}`}>abrir el expediente</a>
+                      : (
+                        <a
+                          class="hit__doc"
+                          href={`/procesos?tipo=deep_case&objetivo=${encodeURIComponent(h.number)}`}
+                        >
+                          capturarlo
+                        </a>
+                      )
+                  }
+                </p>
+              </li>
+            )
+          })
         }
       </ul>
 
-      {
-        result.pageCount > 1 && (
-          <nav class="pager" aria-label="Paginación de resultados">
-            <a
-              class="pager__btn"
-              href={pageHref(Math.max(1, result.page - 1))}
-              aria-disabled={result.page === 1 ? 'true' : undefined}>Anterior</a
-            >
-            <span class="pager__range mono num">
-              {formatInt(result.page)} / {formatInt(result.pageCount)}
-            </span>
-            <a
-              class="pager__btn"
-              href={pageHref(Math.min(result.pageCount, result.page + 1))}
-              aria-disabled={result.page === result.pageCount ? 'true' : undefined}>Siguiente</a
-            >
-          </nav>
-        )
-      }
-
-      {
-        result.ftsQuery !== null && result.total > 0 && (
-          <p class="explain">
-            Consulta enviada al índice: <span class="mono">{result.ftsQuery}</span>
-          </p>
-        )
-      }
     </div>
   </div>
 </Base>

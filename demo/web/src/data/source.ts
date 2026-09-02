@@ -10,6 +10,7 @@ import type {
   JobKind,
   SearchCriteria,
   SearchResult,
+  HeldCase,
 } from './types.ts'
 
 /** A stored document, ready to be written to an HTTP response. */
@@ -46,6 +47,16 @@ export interface WebDataSource {
 
   /** A single case by its CNJ number, or null when it is not in the acervo. */
   getCase(number: string): Promise<CaseDetail | null>
+
+  /**
+   * Which of these case numbers we already hold, and the little the search
+   * results need to show for them.
+   *
+   * Takes the whole list because the caller has the whole list: a page of
+   * portal results asks this once instead of once per row, and a row we do
+   * not hold is simply absent from the map rather than a null to unpack.
+   */
+  casesByNumber(numbers: readonly string[]): Promise<Map<string, HeldCase>>
 
   /**
    * The search form, answered against the acervo: free text across case

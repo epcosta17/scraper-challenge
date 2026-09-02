@@ -1,6 +1,7 @@
 import { readConfig } from './config.ts'
 import { createSqliteDataSource } from './sqlite/source.ts'
 import { createRunner } from './runner.ts'
+import { createPortalSearch } from './portal.ts'
 import type { WebDataSource } from './source.ts'
 
 const config = readConfig()
@@ -26,6 +27,15 @@ export const data: WebDataSource = createSqliteDataSource(config)
  * PDF directory the pages read, so what the worker writes is what they show.
  */
 export const runner = createRunner(config)
+
+/**
+ * The live portal, for the search screen and nothing else.
+ *
+ * Kept beside the acervo rather than inside it because they answer different
+ * questions: the data source says what we have captured, this says what the
+ * court holds. A page that confuses the two would be lying about one of them.
+ */
+export const portal = createPortalSearch()
 
 export type { WebDataSource, DocumentFile } from './source.ts'
 export * from './types.ts'

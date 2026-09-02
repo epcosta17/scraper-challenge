@@ -16,6 +16,7 @@
   "dependencies": {
     "@astrojs/node": "^11.1.5",
     "@pje/core": "*",
+    "@pje/scraper": "*",
     "astro": "^7.2.10",
     "better-sqlite3": "^11.7.0"
   },

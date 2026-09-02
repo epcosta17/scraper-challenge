@@ -56,6 +56,7 @@ import type {
   SearchFilters,
   SearchHit,
   SearchResult,
+  HeldCase,
 } from '../types.ts'
 import { declaredMovements, declaredParties } from './declared.ts'
 import { explainFailure } from './failure-text.ts'
@@ -175,6 +176,27 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       }))
 
       return { items, total, page: safePage, pageSize: size, pageCount }
+    },
+
+    async casesByNumber(numbers: readonly string[]): Promise<Map<string, HeldCase>> {
+      const held = new Map<string, HeldCase>()
+      const conn = connect()
+      if (conn === null || numbers.length === 0) return held
+
+      // One statement with a placeholder per number, rather than a query per
+      // row: a portal result is up to 30 numbers, and 30 round trips to answer
+      // "which of these do we have?" would be 30 for no reason. The values are
+      // bound, never interpolated.
+      const rows = conn.db.prepare(`
+        SELECT number, class_name, court
+          FROM cases
+         WHERE number IN (${numbers.map(() => '?').join(', ')})
+      `).all(...numbers) as Array<{ number: string; class_name: string; court: string | null }>
+
+      for (const r of rows) {
+        held.set(r.number, { className: r.class_name, organ: r.court })
+      }
+      return held
     },
 
     async getCase(number: string): Promise<CaseDetail | null> {

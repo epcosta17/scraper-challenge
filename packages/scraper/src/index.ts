@@ -14,6 +14,14 @@
  */
 export { HttpClient, RateLimitedError, decodeLatin1 } from './http/client.ts'
 export type { HttpClientOptions, HttpEvent, HttpResponse } from './http/client.ts'
+
+// The portal's own search form. Exported because a caller other than the CLI
+// needs it now: the demo's search screen queries the live portal, and the
+// whole point of that screen is to be faithful to the website's form rather
+// than to reimplement a version of it.
+export { search, validateFilters, SearchValidationError, ActionNotExecutedError } from './pje/search.ts'
+export { startSession } from './pje/session.ts'
+export type { SearchFilters, SearchRow, SearchOutcome } from './pje/search.ts'
 export { CookieJar } from './http/cookie-jar.ts'
 
 export { crawl, pdfKeyFor, DEFAULT_STOP_AFTER_MISSES } from './crawl/enumerate.ts'

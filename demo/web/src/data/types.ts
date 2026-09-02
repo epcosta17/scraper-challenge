@@ -348,3 +348,14 @@ export interface Conversation {
   sources: ChatSource[]
   sourceCount: number
 }
+
+/**
+ * The sliver of a captured case that a portal result needs: enough to show
+ * what it is, and to prove we hold it. The portal's own response carries
+ * neither, so this is the difference between a row that opens a case file and
+ * one that can only offer to capture it.
+ */
+export interface HeldCase {
+  className: string
+  organ: string | null
+}
