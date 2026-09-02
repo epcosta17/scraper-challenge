@@ -1,0 +1,193 @@
+---
+import Base from '../layouts/Base.astro'
+import Icon from '../components/Icon.astro'
+import { data } from '../data/index.ts'
+import { formatInt, plural } from '../lib/format.ts'
+
+const conversation = await data.conversation()
+---
+
+<Base
+  title="Chat"
+  current="chat"
+  description="Preguntas en lenguaje natural sobre el acervo, respondidas con citas a los documentos."
+>
+  <div class="split" style="--aside: 460px">
+    <div class="split__main talk">
+      <div class="thread">
+        <header class="thread__head">
+          <p class="eyebrow eyebrow--sm">05 — CONSULTA</p>
+          <p class="thread__scope">{conversation.scope}</p>
+        </header>
+
+        {
+          conversation.messages.map((m) => (
+            <article class="turn">
+              <p class="turn__role" class:list={['turn__role', m.role === 'assistant' && 'turn__role--bot']}>
+                {m.role === 'user' ? 'TÚ' : 'MAGNAR'}
+              </p>
+              <div class="turn__body">
+                {m.paragraphs.map((p) => (
+                  <p class={m.role === 'user' ? 'turn__question' : 'turn__answer'}>{p}</p>
+                ))}
+
+                {
+                  m.citations.length > 0 && (
+                    <p class="cites">
+                      <span class="cites__label">Fundamentado en</span>
+                      {m.citations.map((c) => (
+                        <span class="chip mono">{c}</span>
+                      ))}
+                      {m.extraCitations > 0 && <span class="chip mono">+{m.extraCitations}</span>}
+                    </p>
+                  )
+                }
+              </div>
+            </article>
+          ))
+        }
+      </div>
+
+      <form class="compose" method="get" action="/chat">
+        <div class="compose__field">
+          <input
+            class="compose__input"
+            type="text"
+            name="q"
+            disabled
+            placeholder="Pregunta sobre el acervo…"
+            aria-label="Pregunta sobre el acervo"
+          />
+          <button class="btn btn--send" type="submit" disabled aria-label="Enviar pregunta">
+            <Icon name="arrow-up" size={14} />
+          </button>
+        </div>
+        <p class="compose__note">
+          Las respuestas citan documentos del acervo. El criterio y la aprobación siguen siendo
+          tuyos.
+        </p>
+      </form>
+    </div>
+
+    <aside class="split__aside sources">
+      <header class="section-head">
+        <h2 class="section-head__title">FUENTES CITADAS</h2>
+        <p class="section-head__aside">{plural(conversation.sourceCount, 'expediente', 'expedientes')}</p>
+      </header>
+
+      {
+        conversation.sources.map((s) => (
+          <a class="source" href={`/expedientes/${s.number}`}>
+            <span class="source__top">
+              <span class="mono source__num">{s.number}</span>
+              <Icon name="arrow-up-right" size={14} />
+            </span>
+            <span class="source__class">{s.className}</span>
+            <span class="source__frag">{s.fragment}</span>
+          </a>
+        ))
+      }
+
+      <p class="sources__foot">
+        {formatInt(conversation.sourceCount - conversation.sources.length)} expedientes más sustentan
+        esta respuesta.
+      </p>
+    </aside>
+  </div>
+</Base>
+
+<style>
+  .talk {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 40px;
+    padding: 40px var(--gutter) 0 var(--gutter);
+  }
+  .split__main.talk { padding-right: 40px; }
+  @media (max-width: 1080px) {
+    .split__main.talk { padding-right: var(--gutter); padding-bottom: 8px; }
+  }
+
+  .thread { display: flex; flex-direction: column; gap: 34px; }
+  .thread__head { display: flex; flex-direction: column; gap: 10px; padding-bottom: 8px; }
+  .eyebrow--sm { font-size: 11px; letter-spacing: 1.6px; }
+  .thread__scope { font-size: 14px; font-weight: 300; color: var(--ink-2); }
+
+  .turn { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 18px; }
+  .turn__role {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 1.2px;
+    color: var(--ink-3);
+    padding-top: 6px;
+  }
+  .turn__role--bot { color: var(--ink); }
+  .turn__body { display: flex; flex-direction: column; gap: 16px; }
+  .turn__question { font-size: 17px; line-height: 1.5; color: var(--ink); }
+  .turn__answer { font-size: 16px; font-weight: 300; line-height: 1.6; color: var(--ink); }
+
+  @media (max-width: 640px) {
+    .turn { grid-template-columns: 1fr; gap: 8px; }
+    .turn__role { padding-top: 0; }
+  }
+
+  .cites { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+  .cites__label { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+  .chip {
+    padding: 5px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    font-size: 11px;
+    color: var(--ink-2);
+  }
+
+  .compose { display: flex; flex-direction: column; gap: 12px; padding-bottom: 32px; }
+  .compose__field {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 16px 16px 20px;
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+  }
+  .compose__input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
+    font-size: 15px;
+    font-weight: 300;
+  }
+  .compose__input:disabled { color: var(--ink-3); -webkit-text-fill-color: var(--ink-3); }
+  .btn--send { padding: 9px 14px; }
+  .compose__note { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+
+  .sources {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 40px var(--gutter) 40px 36px;
+    background: var(--surface);
+  }
+  @media (max-width: 1080px) { .sources { padding-left: var(--gutter); } }
+
+  .source {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 16px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--ink-3);
+  }
+  .source:hover { border-color: var(--line-strong); }
+  .source__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .source__num { font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+  .source__class { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+  .source__frag { font-size: 13px; font-weight: 300; line-height: 1.55; color: var(--ink-2); }
+
+  .sources__foot { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+</style>

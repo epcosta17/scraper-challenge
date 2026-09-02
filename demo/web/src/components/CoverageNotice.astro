@@ -1,0 +1,47 @@
+---
+import type { Coverage } from '../data/types.ts'
+import { isPartial, missing } from '../data/types.ts'
+import Icon from './Icon.astro'
+import { formatInt } from '../lib/format.ts'
+
+interface Props {
+  value: Coverage
+  /** Plural noun, lower case: "partes", "documentos", "movimientos". */
+  noun: string
+  /** Why the rows are missing, in the portal's own terms. */
+  cause: string
+}
+
+const { value, noun, cause } = Astro.props
+---
+
+{
+  isPartial(value) && (
+    <p class="notice">
+      <Icon name="triangle-alert" size={15} />
+      <span>
+        <strong>
+          Faltan {formatInt(missing(value))} de {formatInt(value.declared ?? 0)} {noun}.
+        </strong>{' '}
+        {cause} La lista de abajo es lo capturado, no el expediente completo.
+      </span>
+    </p>
+  )
+}
+
+<style>
+  .notice {
+    display: flex;
+    gap: 10px;
+    padding: 12px 14px;
+    border-left: 2px solid var(--warn);
+    border-radius: var(--radius);
+    background: var(--surface);
+    font-size: 13px;
+    font-weight: 300;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  .notice :global(svg) { color: var(--warn); margin-top: 3px; }
+  .notice strong { font-weight: 500; color: var(--ink); }
+</style>

@@ -1,0 +1,43 @@
+---
+import { data } from '../data/index.ts'
+
+interface Props {
+  /** Which of the three top-level sections is showing. */
+  current?: 'expedientes' | 'busqueda' | 'chat' | null
+}
+
+const { current = null } = Astro.props
+const stats = await data.archiveStats()
+
+const links = [
+  { key: 'expedientes', href: '/', label: 'Expedientes' },
+  { key: 'busqueda', href: '/busqueda', label: 'Búsqueda' },
+  { key: 'chat', href: '/chat', label: 'Chat' },
+] as const
+---
+
+<header class="nav">
+  <a class="nav__brand" href="/">
+    <span class="nav__wordmark">TRF5</span>
+    <span class="nav__slash">/</span>
+    <span class="nav__product">Consulta Procesal</span>
+  </a>
+
+  <nav class="nav__links" aria-label="Secciones">
+    {
+      links.map((l) => (
+        <a class="nav__link" href={l.href} aria-current={current === l.key ? 'page' : undefined}>
+          {l.label}
+        </a>
+      ))
+    }
+    <a
+      class="status-pill"
+      href="/procesos"
+      title="Estado de la captura — abre los procesos en curso"
+    >
+      <span class="dot dot--ok"></span>
+      <span>Sincronizado {stats.lastSyncLabel}</span>
+    </a>
+  </nav>
+</header>

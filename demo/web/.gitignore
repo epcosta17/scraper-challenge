@@ -1,0 +1,6 @@
+dist/
+.astro/
+node_modules/
+
+# The root ignores `data/` (scraped output). src/data is source, not output.
+!src/data/
