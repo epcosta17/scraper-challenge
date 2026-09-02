@@ -62,7 +62,18 @@ export interface StoredMovement extends MovementInput {
 // so the scraper has no way to distinguish them — every probe is recorded
 // as `not_found`. Narrowed to what is actually produced rather than
 // declaring statuses ('secret', 'error') the code can never write.
-export type ProbeStatus = 'not_found'
+/**
+ * What looking at one internal id turned up.
+ *
+ * `not_found` — the portal served its error page: no case behind that id.
+ * `unnumbered` — the portal served a real summary that names no case. It
+ *   carries the class, the subjects and the parties, but no number, no panel,
+ *   no distribution date and no movements: a case that exists and has not
+ *   been distributed yet, or one whose numbering is withheld. Recorded as a
+ *   probe rather than a failure because retrying cannot produce a number, and
+ *   there is no key to store the case under either.
+ */
+export type ProbeStatus = 'not_found' | 'unnumbered'
 
 export interface Failure {
   id: number

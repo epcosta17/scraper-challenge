@@ -108,6 +108,38 @@ export function extractPdfText(pdf: Buffer): string {
   return reconstructText(extractTextStreams(pdf))
 }
 
+/**
+ * True when the portal answered with a real summary that names no case.
+ *
+ * Captured live (id 134050 among others): the PDF is well formed and carries
+ * the judicial class, the full subject list and both poles with their parties
+ * by name and role — everything except the number, the judging panel, the
+ * distribution date and the movements. It reads as a case that exists and has
+ * not been distributed yet, or one whose numbering is withheld.
+ *
+ * Worth telling apart from a parse failure because the two deserve opposite
+ * treatment. A failure is retried; this cannot be. The scraper was recording
+ * these as `summary_pdf` failures and retrying them up to seven times each —
+ * 57 of them in one acervo — against a page that will answer the same way
+ * every time.
+ *
+ * Recognised by what is present rather than by what is missing: any PDF can
+ * lack a case number, but only the portal's own summary carries this heading
+ * and a populated Polo Ativo under it.
+ */
+export function isUnnumberedSummary(pdf: Buffer): boolean {
+  let text: string
+  try {
+    text = extractPdfText(pdf)
+  } catch {
+    return false
+  }
+  if (/(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})/.test(text)) return false
+  return text.includes('Detalhe do Processo')
+    && text.includes('Classe Judicial')
+    && text.includes('Polo Ativo')
+}
+
 export function parseCaseRecord(pdf: Buffer): CaseRecord {
   const text = extractPdfText(pdf)
 

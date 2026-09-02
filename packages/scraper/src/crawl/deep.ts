@@ -1,6 +1,6 @@
 import {
   upsertCase, getCaseById, getCaseByNumber, recordFailure, resolveFailure,
-  isDocumentDownloaded, upsertDocument, replacePartiesForCase, replaceMovementsForCase,
+  isDocumentDownloaded, upsertDocument, replacePartiesForCase, replaceMovementsForCase, recordProbe,
   type Db, type BlobStore, type StoredCase, type PartyInput, type MovementInput,
 } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
@@ -11,7 +11,7 @@ import { search, ActionNotExecutedError } from '../pje/search.ts'
 import { fetchAllMovements } from '../pje/movement-pages.ts'
 import { fetchDetail, type DocumentRef, type BinaryDocumentRef, type HtmlDocumentRef, type DetailResult, type ProcessFields } from '../pje/detail.ts'
 import { downloadDocument } from '../pje/download.ts'
-import { parseCaseRecord, parseMovements, extractPdfText, type CaseRecord } from '../pdf/parse.ts'
+import { parseCaseRecord, parseMovements, extractPdfText, isUnnumberedSummary, type CaseRecord } from '../pdf/parse.ts'
 import { pdfKeyFor } from './enumerate.ts'
 
 /** The `'valid'` arm of `DetailResult` — pulled out once so the truncation helpers below don't repeat the union narrowing. */
@@ -70,6 +70,13 @@ export type DeepCaseOutcome =
       documentsFailed: number
     }
   | { kind: 'failed'; ref: string; error: string }
+  /**
+   * The portal answered, and there is no case to capture. Distinct from
+   * `failed` because nothing here is worth retrying: the summary names no
+   * case, so there is no key to store one under and no request that would
+   * produce one.
+   */
+  | { kind: 'absent'; ref: string; reason: string }
 
 export class CaseNotFoundError extends Error {
   constructor(number: string) {
@@ -470,6 +477,23 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
           ? `No summary PDF for id ${idProcessoTrf} (unassigned or sealed).`
           : `Transient HTTP ${report.status} fetching the summary PDF for id ${idProcessoTrf}.`,
       )
+    }
+    if (isUnnumberedSummary(report.pdf)) {
+      // The portal answered with a real summary that names no case: the
+      // class, the subjects and both poles' parties are all there, the
+      // number is not. There is nothing to key a case on and nothing a
+      // retry would change, so this is a probe and an absence rather than
+      // the failure this used to record — and then retry, up to seven times
+      // per id, against a page that answers the same way every time.
+      recordProbe(db, idProcessoTrf, 'unnumbered')
+      resolveFailure(db, 'summary_pdf', String(idProcessoTrf))
+      resolveFailure(db, 'deep_case', targetRef)
+      return {
+        kind: 'absent',
+        ref: targetRef,
+        reason: `the portal's summary for id ${idProcessoTrf} names no case — `
+          + 'not distributed yet, or its numbering is withheld',
+      }
     }
     const record = parseCaseRecord(report.pdf)
     opts.onStep?.({ kind: 'summary_pdf_ok', ref: targetRef, idProcessoTrf, number: record.number, className: record.className })

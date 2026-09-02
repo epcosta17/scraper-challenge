@@ -66,6 +66,9 @@ export function deepDocumentProgressLine(p: DeepDocumentProgress, tag: string): 
 
 export function deepCaseOutcomeLines(o: DeepCaseOutcome): string {
   if (o.kind === 'failed') return `Case ${o.ref} failed: ${o.error}`
+  // Said plainly rather than as a failure, because it is not one and no
+  // retry will change it.
+  if (o.kind === 'absent') return `Case ${o.ref}: nothing to capture — ${o.reason}`
   return [
     `Case ${o.number} (id ${o.idProcessoTrf}):`,
     `  Documents stored:  ${o.documentsStored}`,
@@ -82,6 +85,7 @@ export function deepCaseOutcomeLines(o: DeepCaseOutcome): string {
  */
 export function deepCaseProgressLine(o: DeepCaseOutcome, tag: string): string {
   if (o.kind === 'failed') return `${tag} FAILED: ${o.error}`
+  if (o.kind === 'absent') return `${tag} nothing to capture: ${o.reason}`
   const documents = o.documentsStored + o.documentsSkipped + o.documentsFailed
   const detail = o.documentsFailed > 0 ? `${o.documentsStored} new, ${o.documentsFailed} failed` : `${o.documentsStored} new`
   return `${tag} done: ${o.number} - ${plural(documents, 'document')} (${detail})`

@@ -221,7 +221,11 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         const outcome = await deepCase({ client, db, blobs }, deepTargetFrom(args.positional[0]!), { onDocumentProgress, onStep })
         console.log(args.json ? JSON.stringify(outcome, null, 2) : deepCaseOutcomeLines(outcome))
         reportUnresolvedFailures(db, reporter, retryHint)
-        return outcome.kind === 'failed' || outcome.documentsFailed > 0 ? 1 : 0
+        // `absent` exits 0: the portal answered, there was nothing to take,
+        // and nothing went wrong. Only a real failure — or a case that lost
+        // documents — earns a non-zero code.
+        if (outcome.kind === 'failed') return 1
+        return outcome.kind === 'done' && outcome.documentsFailed > 0 ? 1 : 0
       } finally {
         db.close()
       }

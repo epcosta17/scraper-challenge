@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
-import { extractTextStreams, reconstructText, parseCaseRecord, parseMovements } from '../src/pdf/parse.ts'
+import {
+  extractTextStreams, reconstructText, parseCaseRecord, parseMovements, isUnnumberedSummary,
+} from '../src/pdf/parse.ts'
 
 const pdf = readFileSync(fileURLToPath(new URL('./fixtures/case-130100.pdf', import.meta.url)))
 // Captured live from 0800245-51.2020.4.05.8002 (idProcessoTrf 54225) — the
@@ -226,5 +228,38 @@ describe('parseMovements', () => {
     expect(movements.find((m) => m.timestamp === '05/03/2020 03:12:14')).toMatchObject({
       description: 'Disponibilizado no DJ Eletrônico em 05/03/2020 03:12:14',
     })
+  })
+})
+
+describe('a summary the portal answers without a case number', () => {
+  const fixture = (name: string): Buffer =>
+    readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)))
+  const unnumbered = fixture('summary-unnumbered.pdf')
+
+  /**
+   * Captured live from id 134050. The portal answers, the PDF is well formed,
+   * and it carries the judicial class, the full subject list and both poles
+   * with their parties by name and role — everything except the number, the
+   * judging panel, the distribution date and the movements.
+   *
+   * That is not an id with nothing behind it, and it is not a transient
+   * error. It reads as a case that exists and has not been distributed yet
+   * (or is restricted): retrying will not produce a number, and the scraper
+   * had been retrying these up to seven times each.
+   */
+  it('is recognised as unnumbered rather than reported as a parse failure', () => {
+    expect(isUnnumberedSummary(unnumbered)).toBe(true)
+  })
+
+  it('is not confused with a summary that simply failed to parse', () => {
+    // A page that carries no case data at all is a different thing, and has
+    // to keep going down the failure path.
+    expect(isUnnumberedSummary(fixture('sample-document.pdf'))).toBe(false)
+  })
+
+  it('still refuses to invent a record for it', () => {
+    // The distinction is about how it is *recorded*, not about pretending a
+    // numberless case can be stored: there is no key to store it under.
+    expect(() => parseCaseRecord(unnumbered)).toThrow(/case number/)
   })
 })

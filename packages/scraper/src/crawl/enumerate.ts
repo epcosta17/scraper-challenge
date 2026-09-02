@@ -4,7 +4,7 @@ import {
 } from '@pje/core'
 import { HttpClient } from '../http/client.ts'
 import { fetchReportPdf } from '../pje/report.ts'
-import { parseCaseRecord, parseMovements } from '../pdf/parse.ts'
+import { parseCaseRecord, parseMovements, isUnnumberedSummary } from '../pdf/parse.ts'
 
 export interface CrawlDeps {
   client: HttpClient
@@ -152,6 +152,16 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
         recordFailure(db, 'summary_pdf', String(id), error)
         failed++
         outcome = 'failed'
+      } else if (isUnnumberedSummary(result.pdf)) {
+        // A real summary that names no case: the portal answered, the PDF
+        // carries the class, the subjects and the parties, and there is no
+        // number to key a case on. A probe, not a failure — retrying asks
+        // the same question and gets the same answer, and this scraper had
+        // been asking up to seven times per id.
+        recordProbe(db, id, 'unnumbered')
+        resolveFailure(db, 'summary_pdf', String(id))
+        absent++
+        outcome = 'absent'
       } else {
         const record = parseCaseRecord(result.pdf)
         const key = pdfKeyFor(record)
