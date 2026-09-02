@@ -5,6 +5,7 @@ import type {
   CasePage,
   CaptureOverview,
   ClassOption,
+  OrganOption,
   Conversation,
   EnqueueOutcome,
   JobKind,
@@ -59,6 +60,18 @@ export interface WebDataSource {
   casesByNumber(numbers: readonly string[]): Promise<Map<string, HeldCase>>
 
   /**
+   * Makes sure every one of these cases is on its way into the acervo, and
+   * says which job is carrying each.
+   *
+   * Idempotent by design, because the page that calls it is a GET somebody
+   * will reload: a case already captured needs nothing, and one already
+   * queued or running is answered with the job it already has rather than a
+   * second copy of the same work. The returned map is keyed by internal id so
+   * a row can watch its own job.
+   */
+  ensureCaptureJobs(ids: readonly number[]): Promise<Map<number, number>>
+
+  /**
    * The search form, answered against the acervo: free text across case
    * metadata, party names and the text of every document — ranked, with a
    * highlighted fragment of the document that matched — narrowed by any of
@@ -69,6 +82,9 @@ export interface WebDataSource {
 
   /** The judicial classes the acervo holds, for the class control to offer. */
   caseClasses(): Promise<ClassOption[]>
+
+  /** The judging panels the acervo holds, for the organ control to offer. */
+  caseOrgans(): Promise<OrganOption[]>
 
   /** The OAB states the acervo holds a lawyer for. Empty when it holds none. */
   oabStates(): Promise<string[]>

@@ -227,6 +227,30 @@ export interface AcervoClass {
  * ever answer for the classes that are in it, so this is what a class control
  * over the acervo is allowed to offer.
  */
+/** A judging panel present in the acervo, with how many cases sit under it. */
+export interface AcervoOrgan {
+  organ: string
+  caseCount: number
+}
+
+/**
+ * The judging panels the acervo holds, commonest first.
+ *
+ * Same reasoning as `listCaseClasses`: a control that filters the acervo can
+ * only honestly offer what is in the acervo. Listing every panel of the TRF5
+ * would put values in the menu that cannot match a single row.
+ */
+export function listCaseOrgans(db: Db): AcervoOrgan[] {
+  const rows = db.prepare(`
+    SELECT court, COUNT(*) AS case_count
+    FROM cases
+    WHERE court IS NOT NULL AND court <> ''
+    GROUP BY court
+    ORDER BY case_count DESC, court
+  `).all() as Array<{ court: string; case_count: number }>
+  return rows.map((r) => ({ organ: r.court, caseCount: r.case_count }))
+}
+
 export function listCaseClasses(db: Db): AcervoClass[] {
   const rows = db.prepare(`
     SELECT class_name, COUNT(*) AS case_count

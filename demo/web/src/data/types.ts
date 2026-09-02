@@ -160,6 +160,12 @@ export interface SearchFilters {
   to?: string
   /** Judicial class, matched as a substring, accents and case ignored. */
   class?: string
+  /**
+   * Judging panel, matched the same way. Not one of the portal's eight — its
+   * form has no such field — but the acervo stores it, and a list of captured
+   * cases is where somebody narrows by it.
+   */
+  organ?: string
   /** Name of a participant who is not a lawyer. */
   party?: string
   /** Name of a participant whose role is `ADVOGADO`. */
@@ -179,6 +185,12 @@ export interface SearchCriteria {
 
 /** A judicial class present in the acervo, for the class control. */
 export interface ClassOption {
+  name: string
+  caseCount: number
+}
+
+/** A judging panel present in the acervo, for the organ control. */
+export interface OrganOption {
   name: string
   caseCount: number
 }

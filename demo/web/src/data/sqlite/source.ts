@@ -16,6 +16,7 @@ import {
   getMovementsForCases,
   getPartiesByCase,
   listCaseClasses,
+  listCaseOrgans,
   listCasesPage,
   listFailures,
   listJobs,
@@ -44,6 +45,7 @@ import type {
   ChatMessage,
   ChatSource,
   ClassOption,
+  OrganOption,
   Conversation,
   Coverage,
   EnqueueOutcome,
@@ -199,6 +201,42 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       return held
     },
 
+    async ensureCaptureJobs(ids: readonly number[]): Promise<Map<number, number>> {
+      const carrying = new Map<number, number>()
+      const conn = connect()
+      if (conn === null || ids.length === 0) return carrying
+
+      // What is already captured needs no job at all.
+      const held = new Set(
+        (conn.db.prepare(
+          `SELECT id_processo_trf AS id FROM cases WHERE id_processo_trf IN (${ids.map(() => '?').join(', ')})`,
+        ).all(...ids) as Array<{ id: number }>).map((r) => r.id),
+      )
+
+      // And what is already on the queue is answered with the job it has.
+      // Read once for the whole batch rather than per id: this runs on a page
+      // load somebody may repeat, and it must stay cheap enough not to matter.
+      const open = new Map<number, number>()
+      for (const job of listJobs(conn.db)) {
+        if (job.status !== 'pending' && job.status !== 'running') continue
+        const target = (job.payload as { idProcessoTrf?: unknown }).idProcessoTrf
+        if (typeof target === 'number') open.set(target, job.id)
+      }
+
+      for (const id of ids) {
+        if (held.has(id)) continue
+        const existing = open.get(id)
+        if (existing !== undefined) { carrying.set(id, existing); continue }
+        // By internal id, not by case number: the portal just handed us the
+        // id, and a job named by number would pay for the search bridge again
+        // to rediscover what we already know.
+        const job = enqueueJob(conn.db, 'deep_case', { idProcessoTrf: id })
+        open.set(id, job.id)
+        carrying.set(id, job.id)
+      }
+      return carrying
+    },
+
     async getCase(number: string): Promise<CaseDetail | null> {
       const conn = connect()
       if (conn === null) return null
@@ -294,6 +332,12 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       const conn = connect()
       if (conn === null) return []
       return listCaseClasses(conn.db).map((c) => ({ name: c.className, caseCount: c.caseCount }))
+    },
+
+    async caseOrgans(): Promise<OrganOption[]> {
+      const conn = connect()
+      if (conn === null) return []
+      return listCaseOrgans(conn.db).map((o) => ({ name: o.organ, caseCount: o.caseCount }))
     },
 
     async oabStates(): Promise<string[]> {

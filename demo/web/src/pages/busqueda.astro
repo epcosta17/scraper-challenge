@@ -1,7 +1,7 @@
 ---
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
-import { data, portal, PORTAL_ROW_LIMIT } from '../data/index.ts'
+import { data, portal, runner, PORTAL_ROW_LIMIT } from '../data/index.ts'
 import type { SearchFilters } from '@pje/scraper'
 import { formatInt, formatSeconds } from '../lib/format.ts'
 
@@ -82,6 +82,26 @@ const outcome = asked.length === 0 ? null : await portal.run(stripped)
 const held = outcome !== null && outcome.ok
   ? await data.casesByNumber(outcome.hits.map((h) => h.number))
   : new Map<string, { className: string; organ: string | null }>()
+
+/**
+ * Everything the portal just found gets queued for capture, and a worker is
+ * started to take it.
+ *
+ * The point of finding a case here is to have it, so making somebody click a
+ * second time for each row is a step with no decision in it. Queuing is
+ * idempotent — a case already captured is skipped, one already queued keeps
+ * the job it has — which is what makes this safe on a page reload.
+ *
+ * Only what we do not already hold: re-capturing on every search would put
+ * the court's server to work for nothing.
+ */
+const carrying = outcome !== null && outcome.ok
+  ? await data.ensureCaptureJobs(
+      outcome.hits.filter((h) => !held.has(h.number)).map((h) => h.idProcessoTrf),
+    )
+  : new Map<number, number>()
+
+if (carrying.size > 0) runner.ensureRunning()
 
 const hrefWith = (change: (p: URLSearchParams) => void): string => {
   const next = new URLSearchParams()
@@ -445,49 +465,108 @@ const found = outcome !== null && outcome.ok ? outcome : null
       <ul>
         {
           (found?.hits ?? []).map((h) => {
-            const mine = held.get(h.number)
-            return (
-              <li class="hit">
-                {
-                  mine !== undefined ? (
-                    <a class="hit__head" href={`/expedientes/${h.number}`}>
-                      <span class="hit__num mono">{h.number}</span>
-                      <span class="hit__class">{mine.className}</span>
-                      <span class="hit__organ">{mine.organ ?? '—'}</span>
-                    </a>
-                  ) : (
-                    <div class="hit__head hit__head--plain">
-                      <span class="hit__num mono">{h.number}</span>
-                      <span class="hit__class hit__class--none">sin capturar</span>
-                      <span class="hit__organ" />
-                    </div>
-                  )
-                }
+          const mine = held.get(h.number)
+          const job = carrying.get(h.idProcessoTrf)
+          return (
+            <li class="hit" data-hit data-job={job}>
+              {
+                mine !== undefined ? (
+                  <a class="hit__head" href={`/expedientes/${h.number}`}>
+                    <span class="hit__num mono">{h.number}</span>
+                    <span class="hit__class">{mine.className}</span>
+                    <span class="hit__organ">{mine.organ ?? '—'}</span>
+                  </a>
+                ) : (
+                  <div class="hit__head hit__head--plain">
+                    <span class="hit__num mono">{h.number}</span>
+                    <span class="hit__class hit__class--none" data-cell="class">sin capturar</span>
+                    <span class="hit__organ" />
+                  </div>
+                )
+              }
 
-                <p class="hit__meta">
-                  <span class="mono">id {formatInt(h.idProcessoTrf)}</span>
-                  {
-                    mine !== undefined
-                      ? <a class="hit__doc" href={`/expedientes/${h.number}`}>abrir el expediente</a>
-                      : (
-                        <a
-                          class="hit__doc"
-                          href={`/procesos?tipo=deep_case&objetivo=${encodeURIComponent(h.number)}`}
-                        >
-                          capturarlo
-                        </a>
-                      )
-                  }
-                </p>
-              </li>
-            )
-          })
-        }
+              <p class="hit__meta">
+                <span class="mono">id {formatInt(h.idProcessoTrf)}</span>
+                <span class="hit__status" data-cell="status">
+                  {mine !== undefined
+                    ? <a class="hit__doc" href={`/expedientes/${h.number}`}>abrir el expediente</a>
+                    : <><span class="dot" />en cola</>}
+                </span>
+              </p>
+            </li>
+          )
+        })
+      }
       </ul>
 
     </div>
   </div>
 </Base>
+
+<script>
+  /**
+   * Watches the captures this search just queued.
+   *
+   * Finding a case here is only half of what somebody came for — the other
+   * half is having it — so each row follows its own job and turns into a link
+   * to the case file the moment the worker is done with it. Without this the
+   * page would be a list of promises you had to reload to collect.
+   *
+   * It stops polling as soon as nothing is moving, so a page whose captures
+   * have all landed costs nothing to sit in front of.
+   */
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-hit][data-job]'))
+
+  if (rows.length > 0) {
+    const tick = async (): Promise<void> => {
+      let payload: any
+      try {
+        const response = await fetch('/cola.json', { headers: { accept: 'application/json' } })
+        if (!response.ok) return
+        payload = await response.json()
+      } catch {
+        // The capture is happening in another process either way; the next
+        // tick will say where it got to.
+        return
+      }
+
+      const byId = new Map<number, any>((payload.jobs ?? []).map((j: any) => [j.id, j]))
+      let moving = false
+
+      for (const row of rows) {
+        const job = byId.get(Number(row.dataset.job))
+        if (!job) continue
+        const status = row.querySelector<HTMLElement>('[data-cell="status"]')
+        const klass = row.querySelector<HTMLElement>('[data-cell="class"]')
+        if (!status) continue
+
+        if (job.state === 'done') {
+          const number = row.querySelector('.hit__num')?.textContent?.trim() ?? ''
+          status.innerHTML = `<a class="hit__doc" href="/expedientes/${number}">abrir el expediente</a>`
+          if (klass) { klass.textContent = 'capturado'; klass.classList.remove('hit__class--none') }
+          row.removeAttribute('data-job')
+        } else if (job.state === 'failed') {
+          status.textContent = `no se pudo capturar: ${job.error ?? 'sin motivo registrado'}`
+          status.classList.add('hit__status--bad')
+          row.removeAttribute('data-job')
+        } else if (job.state === 'running') {
+          moving = true
+          const { done, total } = job.progress ?? {}
+          const count = total ? ` ${done}/${total}` : (done ? ` ${done}` : '')
+          // The worker's own words for the step it is on; a counter alone sits
+          // at zero through most of a single case.
+          status.innerHTML = `<span class="dot dot--ok"></span>${job.stage ?? 'capturando'}${count}`
+        } else {
+          moving = true
+        }
+      }
+
+      if (moving || payload.active) setTimeout(tick, 1200)
+    }
+
+    void tick()
+  }
+</script>
 
 <script>
   /**
@@ -616,6 +695,10 @@ const found = outcome !== null && outcome.ok ? outcome : null
 </script>
 
 <style>
+  .hit__status { display: inline-flex; align-items: center; gap: 6px; }
+  .hit__status--bad { color: var(--bad); }
+  .hit__class--none { color: var(--ink-3); font-style: italic; }
+
   /* The date field, and the calendar that drops out of it. */
   .date { position: relative; }
   /* The second of the pair opens its calendar leftwards, so a 236px panel

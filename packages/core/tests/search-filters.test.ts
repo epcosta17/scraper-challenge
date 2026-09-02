@@ -269,3 +269,27 @@ describe('listOabStates', () => {
     expect(listOabStates(db)).toEqual(['PE', 'RN'])
   })
 })
+
+describe('filtering by judging panel', () => {
+  /**
+   * Not one of the portal's eight — its form has no organ field at all — but
+   * the acervo stores the panel, and a list of captured cases is exactly
+   * where somebody narrows by it.
+   */
+  it('matches a panel as a substring', () => {
+    const one = searchAcervo(db, { text: '', filters: { organ: 'RUBENS' } })
+    expect(one.total).toBe(1)
+    expect(one.hits[0]!.court).toContain('RUBENS CANUTO')
+  })
+
+  it('ignores accents and case, like the class filter beside it', () => {
+    expect(searchAcervo(db, { text: '', filters: { organ: 'tenorio' } }).total).toBe(1)
+    expect(searchAcervo(db, { text: '', filters: { organ: 'TENÓRIO' } }).total).toBe(1)
+  })
+
+  it('narrows a text search rather than replacing it', () => {
+    const text = searchAcervo(db, { text: 'gab', filters: {} }).total
+    const both = searchAcervo(db, { text: 'gab', filters: { organ: 'RUBENS' } }).total
+    expect(both).toBeLessThanOrEqual(text)
+  })
+})

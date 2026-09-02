@@ -3,18 +3,123 @@ import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
 import CoverageCount from '../components/CoverageCount.astro'
 import { data } from '../data/index.ts'
+import type { CasePage, SearchResult } from '../data/types.ts'
 import { dateOnly, formatCompact, formatInt, formatPercent } from '../lib/format.ts'
 
+/**
+ * The acervo: what we have captured, listed and searched.
+ *
+ * The toolbar searches *here*, not at the court — full text across case
+ * metadata, party names and the text of every document we downloaded, which
+ * is a thing the portal cannot do at all. When it finds nothing, that is a
+ * statement about our acervo and not about the TRF5, so the empty state says
+ * so and offers to go ask the court instead.
+ */
 const PAGE_SIZE = 6
 
-const requested = Number.parseInt(Astro.url.searchParams.get('p') ?? '1', 10)
-const [page, stats] = await Promise.all([
-  data.listCases(Number.isFinite(requested) ? requested : 1, PAGE_SIZE),
+const params = Astro.url.searchParams
+const raw = (key: string): string => (params.get(key) ?? '').trim()
+
+const text = raw('q')
+const clase = raw('clase')
+const organo = raw('organo')
+const periodo = raw('periodo')
+const searching = text !== '' || clase !== '' || organo !== '' || periodo !== ''
+
+/**
+ * The period control, as ranges rather than dates: on this screen somebody is
+ * skimming, and "the last month" is the question they actually have. The
+ * search page is where an exact range belongs.
+ */
+const PERIODS: ReadonlyArray<{ key: string; label: string; days: number | null }> = [
+  { key: '7d', label: 'Últimos 7 días', days: 7 },
+  { key: '30d', label: 'Últimos 30 días', days: 30 },
+  { key: '90d', label: 'Últimos 90 días', days: 90 },
+  { key: 'year', label: 'Este año', days: null },
+]
+
+const written = (d: Date): string =>
+  `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
+
+const periodRange = ((): { from: string; to: string } | null => {
+  const chosen = PERIODS.find((p) => p.key === periodo)
+  if (chosen === undefined) return null
+  const now = new Date()
+  const from = chosen.days === null
+    ? new Date(now.getFullYear(), 0, 1)
+    : new Date(now.getFullYear(), now.getMonth(), now.getDate() - chosen.days)
+  return { from: written(from), to: written(now) }
+})()
+
+const requested = Number.parseInt(params.get('p') ?? '1', 10)
+const pageNumber = Number.isFinite(requested) ? requested : 1
+
+const [page, stats, classes, organs] = await Promise.all([
+  searching
+    ? data.search({
+        text,
+        filters: {
+          class: clase,
+          organ: organo,
+          from: periodRange?.from ?? '',
+          to: periodRange?.to ?? '',
+        },
+      }, pageNumber, PAGE_SIZE)
+    : data.listCases(pageNumber, PAGE_SIZE),
   data.archiveStats(),
+  data.caseClasses(),
+  data.caseOrgans(),
 ])
 
-const first = page.items.length === 0 ? 0 : (page.page - 1) * page.pageSize + 1
-const last = first === 0 ? 0 : first + page.items.length - 1
+/**
+ * A listing and a search answer with different shapes, and they are kept
+ * apart rather than flattened into one: a search hit carries why it matched
+ * and a fragment of the document it matched in, and a listed case carries
+ * the capture coverage that would be meaningless on a hit.
+ */
+const listed = searching ? [] : (page as CasePage).items
+const hits = searching ? (page as SearchResult).hits : []
+const shownCount = searching ? hits.length : listed.length
+
+const first = shownCount === 0 ? 0 : (page.page - 1) * page.pageSize + 1
+const last = first === 0 ? 0 : first + shownCount - 1
+
+/** Only what was actually chosen travels in the URL. */
+const asked: ReadonlyArray<readonly [string, string]> = (
+  [['q', text], ['clase', clase], ['organo', organo], ['periodo', periodo]] as const
+).filter(([, v]) => v !== '')
+
+const hrefWith = (change: (p: URLSearchParams) => void): string => {
+  const next = new URLSearchParams()
+  for (const [k, v] of asked) next.set(k, v)
+  change(next)
+  const query = next.toString()
+  return query === '' ? '/' : `/?${query}`
+}
+
+/**
+ * Where an empty acervo search sends you.
+ *
+ * The portal has no free-text field, so what was typed here cannot simply be
+ * handed over — it has to be read for what it is. A case number is a number,
+ * a run of digits is a CPF or CNPJ, two or more words is a party name (the
+ * portal refuses one). Anything else opens the form with nothing filled in,
+ * which is honest: we could not translate the question, so we do not pretend
+ * to have.
+ */
+const portalHref = ((): string => {
+  const q = new URLSearchParams()
+  const digits = text.replace(/\D+/g, '')
+  if (/^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$/.test(text)) q.set('number', text)
+  else if (digits.length === 11 || digits.length === 14) {
+    q.set('document', text)
+    q.set('document-type', digits.length === 11 ? 'cpf' : 'cnpj')
+  } else if (text.trim().split(/\s+/).filter(Boolean).length >= 2) q.set('party', text)
+  if (clase !== '') q.set('class', clase)
+  if (periodRange !== null) { q.set('from', periodRange.from); q.set('to', periodRange.to) }
+  const query = q.toString()
+  return query === '' ? '/busqueda' : `/busqueda?${query}`
+})()
 
 /** 1 2 3 … 22.237, with the ellipsis where the run is broken. */
 const pageLinks: (number | null)[] = (() => {
@@ -25,9 +130,17 @@ const pageLinks: (number | null)[] = (() => {
   return uniq.filter((n) => n === null || n <= page.pageCount)
 })()
 
-const href = (n: number) => (n === 1 ? '/' : `/?p=${n}`)
+/** Paging keeps whatever is narrowing the list; dropping it would page a different set. */
+const href = (n: number): string =>
+  hrefWith((p) => { p.delete('p'); if (n > 1) p.set('p', String(n)) })
 
-const filters = ['Clase', 'Órgano', 'Periodo']
+/** Which index a hit turned up in, said in the interface's language. */
+const MATCHED_LABEL = {
+  case: 'datos del proceso',
+  party: 'partes',
+  document: 'documentos',
+} as const
+
 const columns = [
   'Nº EXPEDIENTE',
   'CLASE',
@@ -52,30 +165,54 @@ const columns = [
     </p>
   </section>
 
-  <form class="toolbar gutter" method="get" action="/busqueda">
+  <form class="toolbar gutter" method="get" action="/">
     <div class="toolbar__search">
       <Icon name="search" size={16} />
       <input
         class="toolbar__input"
         type="search"
         name="q"
+        value={text}
         placeholder="Buscar por número, parte, CPF/CNPJ o texto del documento"
         aria-label="Buscar en el acervo"
       />
     </div>
-    {
-      filters.map((f) => (
-        <button
-          class="toolbar__filter"
-          type="button"
-          disabled
-          title="Sin implementar: el acervo se filtra hoy por la búsqueda de texto"
-        >
-          <span>{f}</span>
-          <Icon name="chevron-down" size={14} />
-        </button>
-      ))
-    }
+
+    <label class="toolbar__filter">
+      <span class="visually-hidden">Clase</span>
+      <select name="clase">
+        <option value="">Clase</option>
+        {classes.map((c) => (
+          <option value={c.name} selected={c.name === clase}>{c.name} ({formatInt(c.caseCount)})</option>
+        ))}
+      </select>
+      <Icon name="chevron-down" size={14} />
+    </label>
+
+    <label class="toolbar__filter">
+      <span class="visually-hidden">Órgano</span>
+      <select name="organo">
+        <option value="">Órgano</option>
+        {organs.map((o) => (
+          <option value={o.name} selected={o.name === organo}>{o.name} ({formatInt(o.caseCount)})</option>
+        ))}
+      </select>
+      <Icon name="chevron-down" size={14} />
+    </label>
+
+    <label class="toolbar__filter">
+      <span class="visually-hidden">Periodo</span>
+      <select name="periodo">
+        <option value="">Periodo</option>
+        {PERIODS.map((p) => (
+          <option value={p.key} selected={p.key === periodo}>{p.label}</option>
+        ))}
+      </select>
+      <Icon name="chevron-down" size={14} />
+    </label>
+
+    <button class="toolbar__go" type="submit">Buscar</button>
+    {asked.length > 0 && <a class="toolbar__clear" href="/">Limpiar</a>}
   </form>
 
   <div class="table gutter">
@@ -84,7 +221,7 @@ const columns = [
     </div>
 
     {
-      page.items.map((c) => (
+      listed.map((c) => (
         <a class="case" href={`/expedientes/${c.number}`}>
           <span class="case__number mono">{c.number}</span>
           <span class="case__cell" data-label="Clase">{c.className}</span>
@@ -105,9 +242,53 @@ const columns = [
         </a>
       ))
     }
+    {
+      hits.map((h) => (
+        <a class="case case--hit" href={`/expedientes/${h.number}`}>
+          <span class="case__number mono">{h.number}</span>
+          <span class="case__cell" data-label="Clase">{h.className}</span>
+          <span class="case__cell" data-label="Órgano">{h.organ ?? '—'}</span>
+          <span class="case__cell case__hitmeta" data-label="Coincide en">
+            {h.matchedIn.length === 0
+              ? 'cumple los filtros'
+              : `coincide en ${h.matchedIn.map((m) => MATCHED_LABEL[m]).join(' · ')}`}
+            {h.snippet !== null && (
+              <span class="snippet">
+                {h.snippet.segments.map((seg) =>
+                  seg.hit ? <mark class="snippet__hit">{seg.text}</mark> : <span>{seg.text}</span>
+                )}
+              </span>
+            )}
+          </span>
+        </a>
+      ))
+    }
 
     {
-      page.items.length === 0 && (
+      /*
+        Nothing found here is a statement about our acervo, never about the
+        court: a case nobody has crawled is missing from this database and
+        present at the TRF5. Saying it does not exist would be the same silent
+        lie the scraper refuses everywhere else — so this says which of the
+        two it knows, and offers the question it cannot answer itself.
+      */
+      searching && hits.length === 0 && (
+        <div class="nothing">
+          <p class="nothing__title">Nada en el acervo con esos criterios.</p>
+          <p class="nothing__body">
+            Esto habla de lo que hemos capturado, no de lo que tiene el tribunal: un expediente que
+            nadie ha traído todavía no está aquí y sí está en el portal.
+          </p>
+          <a class="btn" href={portalHref}>
+            <Icon name="search" size={14} />
+            Buscarlo en el portal del TRF5
+          </a>
+        </div>
+      )
+    }
+
+    {
+      !searching && listed.length === 0 && (
         <p class="table__empty">
           {page.total === 0
             ? 'Todavía no hay ningún expediente capturado. Encola una captura desde Procesos, o llénala con el scraper.'
@@ -123,7 +304,7 @@ const columns = [
   <nav class="pager gutter" aria-label="Paginación del acervo">
     <p class="pager__range">
       {
-        page.items.length === 0
+        shownCount === 0
           ? `Página ${formatInt(page.page)} de ${formatInt(page.pageCount)}`
           : `Mostrando ${formatInt(first)}–${formatInt(last)} de ${formatInt(page.total)}`
       }
@@ -180,6 +361,66 @@ const columns = [
 </Base>
 
 <style>
+  /* The filters are real controls now: a <select> wearing the button's skin. */
+  .toolbar__filter { position: relative; cursor: pointer; }
+  .toolbar__filter select {
+    appearance: none;
+    width: 100%;
+    height: 100%;
+    padding: 0 26px 0 12px;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .toolbar__filter select:focus { outline: none; }
+  .toolbar__filter:hover select { color: var(--ink); }
+  .toolbar__filter svg { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+
+  .toolbar__go {
+    padding: 0 16px;
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    font: inherit;
+    font-size: 13px;
+    color: var(--paper);
+    cursor: pointer;
+  }
+  .toolbar__clear {
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+  .toolbar__clear:hover { color: var(--ink); }
+
+  /* A hit row trades the capture counters for why it matched. */
+  .case__hitmeta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .snippet { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
+  .snippet__hit { background: none; color: var(--ink); font-weight: 500; }
+
+  /* Nothing in the acervo — and the way out of it. */
+  .nothing {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 26px 0 30px;
+    border-bottom: 1px solid var(--line);
+  }
+  .nothing__title { margin: 0; font-size: 15px; color: var(--ink); }
+  .nothing__body { margin: 0; max-width: 62ch; font-size: 13px; color: var(--ink-3); line-height: 1.6; }
+  .nothing .btn { margin-top: 6px; }
+
   .head {
     display: flex;
     flex-direction: column;

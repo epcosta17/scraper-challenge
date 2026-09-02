@@ -338,6 +338,12 @@ export interface AcervoFilters {
   to?: string
   /** Judicial class, matched as a substring, case- and accent-insensitively. */
   class?: string
+  /**
+   * Judging panel, matched the same way. Not one of the portal's own eight —
+   * its form has no such field — but the acervo stores it and it is the
+   * question a person skimming a list of captured cases actually asks.
+   */
+  organ?: string
   /** Name of a participant who is not a lawyer. */
   party?: string
   /** Name of a participant whose role is `ADVOGADO`. */
@@ -503,6 +509,12 @@ function buildFilters(f: AcervoFilters): FilterSql {
   if (className !== null) {
     clauses.push(`${foldSql('c.class_name')} LIKE @fClass ESCAPE '\\'`)
     params.fClass = `%${escapeLike(foldValue(className))}%`
+  }
+
+  const organ = trimmed(f.organ)
+  if (organ !== null) {
+    clauses.push(`${foldSql('c.court')} LIKE @fOrgan ESCAPE '\\'`)
+    params.fOrgan = `%${escapeLike(foldValue(organ))}%`
   }
 
   const party = trimmed(f.party)
