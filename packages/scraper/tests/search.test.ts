@@ -158,6 +158,21 @@ describe('parseSearchResponse', () => {
     expect(out.rows).toHaveLength(30)
   })
 
+  it('accepts the shorter ca the portal gives an older case', () => {
+    // Captured live: a search that reaches cases from 1999, 2005 and 2010
+    // comes back with a 32-hex ca for those rows and 48-hex for the recent
+    // ones. Both resolve a real detail page — verified against the portal —
+    // so a parser that demands 48 rejects the whole response and loses the
+    // 27 rows that were fine along with the 3 it could not read.
+    const xml = fx('search-results.xml').replace(
+      /listView\.seam\?ca=([0-9a-f]{48})/,
+      'listView.seam?ca=425a4dad7bac2fd9ab141b7f5f93844c',
+    )
+    const out = parseSearchResponse(xml)
+    expect(out.rows).toHaveLength(30)
+    expect(out.rows.map((r) => r.ca)).toContain('425a4dad7bac2fd9ab141b7f5f93844c')
+  })
+
   it('throws when the action never executed rather than reporting zero results', () => {
     // Ajax-Update-Ids = fPP:j_id248 means only the message panel re-rendered.
     expect(() => parseSearchResponse(fx('search-not-executed.xml')))

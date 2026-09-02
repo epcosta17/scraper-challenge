@@ -107,7 +107,22 @@ export function buildSearchPayload(
 
 const ROW_RE = /id="fPP:processosTable:(\d+):/g
 const NUMBER_RE = /(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})/
-const CA_RE = /listView\.seam\?ca=([0-9a-f]{48})/
+/**
+ * The `ca` token on a result row.
+ *
+ * Two lengths, both real. Recent cases carry 48 hex; cases from the 1990s and
+ * 2000s carry 32, and both resolve a detail page — verified live against
+ * cases from 1999, 2005 and 2010. Pinning this at 48, as it was, meant a
+ * search that happened to reach an old case failed *entirely*: the three
+ * unreadable rows tripped the shape-change guard below and took the
+ * twenty-seven good ones with them, so `--party` was effectively broken for
+ * any name with history.
+ *
+ * Left as an alternation rather than a range: these are the two shapes the
+ * portal is known to emit, and a token of some third length is exactly the
+ * surprise the guard below exists to report.
+ */
+const CA_RE = /listView\.seam\?ca=((?:[0-9a-f]{48}|[0-9a-f]{32}))(?![0-9a-f])/
 
 export interface SearchRow {
   idProcessoTrf: number
