@@ -468,3 +468,57 @@ describe('a failure remembers which case it belongs to', () => {
     expect(row!.attempts).toBe(2)
   })
 })
+
+describe('which source of movements wins', () => {
+  const aCase = (id: number) => ({ ...sample, idProcessoTrf: id })
+  const rows = (n: number, from: string) =>
+    Array.from({ length: n }, (_, i) => ({
+      position: i, timestamp: null, description: `${from} ${i}`,
+    }))
+
+  /**
+   * Measured on 0000292-82.2007.4.05.8400, whose case file declares 4,182
+   * movements: the table gives exactly that, the summary PDF gives 4,200.
+   *
+   * The eighteen extra are not movements. A hearing reads "Audiência
+   * Instrução Realizada para 26/05/2008 17:11:00 Sala de Audiências." — with
+   * a timestamp *inside* the text — and the PDF parser, which delimits
+   * movements by timestamps, cuts there and invents a second one saying only
+   * "Sala de Audiências.". The PDF's text is dirtier too: "Não- acolhidos",
+   * carrying the hyphen and space of a line wrap.
+   *
+   * So the rule cannot be "keep whichever has more": that hands it to the
+   * broken source, and to a pattern common to every case with a hearing.
+   */
+  it('lets the case file replace what the PDF stored', () => {
+    upsertCase(db, aCase(1))
+    replaceMovementsForCase(db, 1, rows(4200, 'pdf'), 'pdf')
+    replaceMovementsForCase(db, 1, rows(4182, 'table'), 'table')
+    expect(getMovementsByCase(db, 1)).toHaveLength(4182)
+    expect(getMovementsByCase(db, 1)[0]!.description).toBe('table 0')
+  })
+
+  it('refuses to let the PDF replace what the case file stored', () => {
+    upsertCase(db, aCase(1))
+    replaceMovementsForCase(db, 1, rows(21, 'table'), 'table')
+    // A later crawl passing over the same id has only the PDF in hand. Left
+    // to overwrite, it degrades the case silently — and `crawl` never fetches
+    // the page it would need to notice.
+    replaceMovementsForCase(db, 1, rows(19, 'pdf'), 'pdf')
+    expect(getMovementsByCase(db, 1)).toHaveLength(21)
+    expect(getMovementsByCase(db, 1)[0]!.description).toBe('table 0')
+  })
+
+  it('lets the PDF replace what the PDF stored, so a crawl still refreshes', () => {
+    upsertCase(db, aCase(1))
+    replaceMovementsForCase(db, 1, rows(19, 'old'), 'pdf')
+    replaceMovementsForCase(db, 1, rows(23, 'new'), 'pdf')
+    expect(getMovementsByCase(db, 1)).toHaveLength(23)
+  })
+
+  it('writes into an empty case whatever the source', () => {
+    upsertCase(db, aCase(1))
+    replaceMovementsForCase(db, 1, rows(5, 'pdf'), 'pdf')
+    expect(getMovementsByCase(db, 1)).toHaveLength(5)
+  })
+})

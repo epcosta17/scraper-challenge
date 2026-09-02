@@ -487,7 +487,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     // resolves should still keep the procedural log its summary PDF already
     // gave up for free.
     let movements = parseMovements(report.pdf)
-    replaceMovementsForCase(db, idProcessoTrf, movements)
+    replaceMovementsForCase(db, idProcessoTrf, movements, 'pdf')
 
     let detail: DetailResult | null = null
     if (ca) {
@@ -538,7 +538,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
         timestamp: row.timestamp,
         description: row.description,
       }))
-      replaceMovementsForCase(db, idProcessoTrf, movements)
+      replaceMovementsForCase(db, idProcessoTrf, movements, 'table')
     }
     checkMovementsTruncation(db, idProcessoTrf, movements, detail)
 

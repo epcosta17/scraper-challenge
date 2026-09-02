@@ -189,7 +189,7 @@ export async function crawl(deps: CrawlDeps, opts: CrawlOptions): Promise<CrawlS
         // ones later deep-scraped. No cross-check against the detail page's
         // stated total here: `crawl` never fetches that page (see
         // `crawl/deep.ts`'s `checkMovementsTruncation` for the run that does).
-        replaceMovementsForCase(db, id, parseMovements(result.pdf))
+        replaceMovementsForCase(db, id, parseMovements(result.pdf), 'pdf')
         // This id may have failed on an earlier run (a transient error, a
         // 429 that exhausted its retries); it just succeeded, so any such
         // record is no longer accurate.

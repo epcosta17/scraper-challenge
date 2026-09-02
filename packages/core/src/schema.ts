@@ -28,7 +28,11 @@ CREATE TABLE IF NOT EXISTS cases (
   court_address   TEXT,
   reference_number TEXT,
   first_seen_at   TEXT NOT NULL,
-  last_scraped_at TEXT NOT NULL
+  last_scraped_at TEXT NOT NULL,
+  -- Where this case's movements came from: the case file's own table, or the
+  -- summary PDF. Kept because the two are not equal and the better one must
+  -- not be overwritten by the worse — see replaceMovementsForCase.
+  movements_source TEXT
 );
 
 -- One row per participant listed in the detail page's Polo Ativo/Passivo
@@ -198,6 +202,7 @@ const COLUMN_MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: str
   { table: 'jobs', column: 'heartbeat_at', ddl: 'ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT' },
   { table: 'jobs', column: 'stage', ddl: 'ALTER TABLE jobs ADD COLUMN stage TEXT' },
   { table: 'failures', column: 'id_processo_trf', ddl: 'ALTER TABLE failures ADD COLUMN id_processo_trf INTEGER' },
+  { table: 'cases', column: 'movements_source', ddl: "ALTER TABLE cases ADD COLUMN movements_source TEXT" },
 ]
 
 export function migrateSchema(db: Db): void {
