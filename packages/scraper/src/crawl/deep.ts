@@ -8,7 +8,7 @@ import { CookieJar } from '../http/cookie-jar.ts'
 import { fetchReportPdf } from '../pje/report.ts'
 import { startSession } from '../pje/session.ts'
 import { search, ActionNotExecutedError } from '../pje/search.ts'
-import { fetchDetail, type DocumentRef, type BinaryDocumentRef, type DetailResult, type ProcessFields } from '../pje/detail.ts'
+import { fetchDetail, type DocumentRef, type BinaryDocumentRef, type HtmlDocumentRef, type DetailResult, type ProcessFields } from '../pje/detail.ts'
 import { downloadDocument } from '../pje/download.ts'
 import { parseCaseRecord, parseMovements, extractPdfText, type CaseRecord } from '../pdf/parse.ts'
 import { pdfKeyFor } from './enumerate.ts'
@@ -106,8 +106,14 @@ export function sanitizeFilename(raw: string): string {
  * PDF. The document's own id is appended (not just decoration: two
  * documents of the same type filed in the same second are possible, and
  * this is what keeps the key collision-free without it).
+ *
+ * One scheme for both kinds of document: a judicial act now arrives with a
+ * PDF of its own (see `downloadActPdf`), and there is no reason for it to
+ * land anywhere else on disk than the binaries it sits beside in the case
+ * file. The ids can't collide either — both are `idProcessoDocumento`,
+ * unique within the case.
  */
-export function documentPdfKeyFor(caseNumber: string, ref: BinaryDocumentRef): string {
+export function documentPdfKeyFor(caseNumber: string, ref: BinaryDocumentRef | HtmlDocumentRef): string {
   const year = caseNumber.split('.')[1] ?? 'unknown'
   const date = ref.date ?? 'unknown-date'
   const type = ref.type ?? 'documento'
@@ -322,12 +328,19 @@ async function resolveTarget(
 }
 
 /**
- * Downloads and stores one document. Binary documents get a row plus a
- * blob, written in that order — matching the ordering decision already
- * made for the summary PDF in `enumerate.ts` — so a failed blob write can
- * never leave a PDF on disk with no row pointing at it. HTML documents get
- * only a row: their content is small enough to live in `text_content`
- * directly, with no blob write at all.
+ * Downloads and stores one document, and answers with what could NOT be
+ * captured — a message for the failures table — or `null` when everything
+ * was.
+ *
+ * Both kinds get a row plus a blob, written in that order — matching the
+ * ordering decision already made for the summary PDF in `enumerate.ts` —
+ * so a failed blob write can never leave a PDF on disk with no row
+ * pointing at it. A judicial act's row additionally keeps the act's text in
+ * `text_content` (small, and what the full-text index is built from);
+ * that text is stored whatever happens to its PDF, which is why an act
+ * whose PDF is missing returns a message here instead of throwing. A page
+ * that offers no PDF at all is not a failure and returns `null` — see
+ * `ActPdfResult`.
  *
  * A `MalformedDocumentRef` (see `detail.ts`) is never fetched at all — it
  * throws immediately, with the raw trigger text for diagnosis, so the
@@ -340,7 +353,7 @@ async function resolveTarget(
  */
 async function downloadOneDocument(
   deps: DeepDeps, execClient: HttpClient, idProcessoTrf: number, caseNumber: string, ref: DocumentRef,
-): Promise<void> {
+): Promise<string | null> {
   if (ref.kind === 'malformed') {
     throw new Error(`Unrecognised document link, never fetched: ${ref.raw}`)
   }
@@ -383,9 +396,10 @@ async function downloadOneDocument(
       textContent,
     })
     await deps.blobs.put(key, result.pdf)
-    return
+    return null
   }
   if (ref.kind === 'html' && result.kind === 'html') {
+    const key = result.pdf.kind === 'pdf' ? documentPdfKeyFor(caseNumber, ref) : null
     upsertDocument(deps.db, {
       idProcessoDocumento: ref.id,
       idProcessoTrf,
@@ -394,10 +408,13 @@ async function downloadOneDocument(
       label: ref.label,
       docType: ref.type,
       docDate: ref.date,
-      pdfKey: null,
+      pdfKey: key,
       textContent: result.text,
     })
-    return
+    if (result.pdf.kind === 'pdf') await deps.blobs.put(key!, result.pdf.pdf)
+    return result.pdf.kind === 'failed'
+      ? `Document ${ref.id} was stored with its text, but ${result.pdf.reason}`
+      : null
   }
   // downloadDocument's result kind always tracks ref.kind (binary -> pdf,
   // html -> html); reaching here would mean that contract broke.
@@ -520,12 +537,21 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     }
     for (const docRef of pending) {
       try {
-        await downloadOneDocument(deps, caseClient, idProcessoTrf, record.number, docRef)
+        const partial = await downloadOneDocument(deps, caseClient, idProcessoTrf, record.number, docRef)
         stored++
-        // This document may have failed on an earlier run; it just
-        // succeeded, so any such record is no longer accurate (mirrors
-        // `resolveFailure(db, 'summary_pdf', ...)` above).
-        resolveFailure(db, 'document', String(docRef.id))
+        if (partial !== null) {
+          // The document itself is stored — a judicial act keeps its text
+          // whatever happens to its PDF — so it counts as stored, not
+          // failed. What is missing goes in `failures` all the same, under
+          // the same kind and ref as an outright download failure, rather
+          // than being quietly dropped because most of the row made it.
+          recordFailure(db, 'document', String(docRef.id), partial)
+        } else {
+          // This document may have failed on an earlier run; it just
+          // succeeded, so any such record is no longer accurate (mirrors
+          // `resolveFailure(db, 'summary_pdf', ...)` above).
+          resolveFailure(db, 'document', String(docRef.id))
+        }
         opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'stored' })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)

@@ -33,6 +33,9 @@ const detailInvalidCa = fixture('detail-invalid-ca.html')
 const listViewSession = fixture('list-view.html') // action=..., submitParam=fPP:j_id244
 const samplePdf = fixture('sample-document.pdf')
 const errorHtml = fixture('error-seam.html')
+// A real act page, form and all — the only fixture here whose "Gerar PDF"
+// form `downloadActPdf` can actually parse (see download.test.ts).
+const despachoPage = fixture('document-page-despacho.html')
 
 const VALID_CA = 'ca'.repeat(24)
 const STALE_CA = 'aa'.repeat(24)
@@ -56,6 +59,8 @@ interface PortalScript {
   searchAction?: (body: string) => MaybePromise<Spec>
   binaryDoc?: (idBin: number) => MaybePromise<Spec>
   htmlDoc?: (ca: string, idProcessoDoc: number) => MaybePromise<Spec>
+  /** The "Gerar PDF" POST an act page's own form fires — see `downloadActPdf`. */
+  actPdf?: (body: string) => MaybePromise<Spec>
 }
 
 function fakePortal(script: PortalScript, requestLog: string[] = []): HttpClient {
@@ -67,7 +72,9 @@ function fakePortal(script: PortalScript, requestLog: string[] = []): HttpClient
     if (u.pathname.endsWith('/reportPDF.seam')) {
       spec = await script.summaryPdf!(Number(u.searchParams.get('idProcessoTrf')))
     } else if (u.pathname.endsWith('/documentoSemLoginHTML.seam')) {
-      spec = await script.htmlDoc!(u.searchParams.get('ca')!, Number(u.searchParams.get('idProcessoDoc')))
+      spec = init?.method === 'POST'
+        ? await script.actPdf!(String(init.body ?? ''))
+        : await script.htmlDoc!(u.searchParams.get('ca')!, Number(u.searchParams.get('idProcessoDoc')))
     } else if (u.pathname.endsWith('/DetalheProcessoConsultaPublica/listView.seam')) {
       spec = u.searchParams.has('idBin')
         ? await script.binaryDoc!(Number(u.searchParams.get('idBin')))
@@ -548,6 +555,77 @@ describe('search bridge concurrency', () => {
     expect(maxInFlight).toBe(1)
     expect(a).toMatchObject({ kind: 'done', idProcessoTrf: 1, number: REAL_NUMBER })
     expect(b).toMatchObject({ kind: 'failed', ref: '2' })
+  })
+})
+
+describe('deepCase — a judicial act\'s own PDF', () => {
+  const storedCase = {
+    idProcessoTrf: 1, number: REAL_NUMBER, ca: VALID_CA, className: 'x', classCode: null,
+    court: null, panel: null, distributedAt: null, subjects: [], parties: [], summaryPdfKey: null,
+    jurisdiction: null, courtAddress: null, referenceNumber: null,
+  }
+
+  it('stores the PDF under the same key scheme as a binary document, text and all', async () => {
+    upsertCase(db, storedCase)
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
+      htmlDoc: () => ({ body: despachoPage }),
+      actPdf: () => ({ body: samplePdf }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    expect(outcome).toMatchObject({ kind: 'done', documentsStored: 2, documentsFailed: 0 })
+
+    const docs = getDocumentsByCase(db, 1)
+    expect(docs).toHaveLength(2)
+    for (const d of docs) {
+      expect(d.pdfKey).toMatch(new RegExp(`^2026/${REAL_NUMBER}/documents/.+\\.pdf$`))
+      expect((await blobs.get(d.pdfKey!)).subarray(0, 5).toString()).toBe('%PDF-')
+      expect(d.textContent).toContain('DESPACHO')
+    }
+    expect(listFailures(db, { unresolvedOnly: true })).toHaveLength(0)
+  })
+
+  it('keeps the act\'s text and records a failure when its PDF will not download', async () => {
+    upsertCase(db, storedCase)
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
+      htmlDoc: () => ({ body: despachoPage }),
+      actPdf: () => ({ body: Buffer.from('<html>not a pdf</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    // The act itself was captured — only its PDF was not.
+    expect(outcome).toMatchObject({ kind: 'done', documentsStored: 2, documentsFailed: 0 })
+
+    const docs = getDocumentsByCase(db, 1)
+    expect(docs).toHaveLength(2)
+    for (const d of docs) {
+      expect(d.textContent).toContain('DESPACHO')
+      expect(d.pdfKey).toBeNull()
+    }
+
+    const failures = listFailures(db, { unresolvedOnly: true })
+    expect(failures).toHaveLength(2)
+    expect(failures.map((f) => f.kind)).toEqual(['document', 'document'])
+    expect(failures.map((f) => f.ref).sort()).toEqual(['12101537', '12102009'])
+    expect(failures[0]!.error).toContain('PDF')
+  })
+
+  it('records no failure for an act page that simply offers no PDF', async () => {
+    upsertCase(db, storedCase)
+    const client = fakePortal({
+      summaryPdf: () => ({ body: realSummaryPdf }),
+      detail: () => ({ body: detailHtmlOnlyMatchingMovements }),
+      htmlDoc: () => ({ body: Buffer.from('<html>ato judicial</html>', 'latin1') }),
+    })
+
+    const outcome = await deepCase({ client, db, blobs }, { kind: 'id', id: 1 })
+    expect(outcome).toMatchObject({ kind: 'done', documentsStored: 2, documentsFailed: 0 })
+    for (const d of getDocumentsByCase(db, 1)) expect(d.pdfKey).toBeNull()
+    expect(listFailures(db, { unresolvedOnly: true })).toHaveLength(0)
   })
 })
 
