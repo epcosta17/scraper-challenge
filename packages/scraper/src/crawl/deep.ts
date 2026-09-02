@@ -8,6 +8,7 @@ import { CookieJar } from '../http/cookie-jar.ts'
 import { fetchReportPdf } from '../pje/report.ts'
 import { startSession } from '../pje/session.ts'
 import { search, ActionNotExecutedError } from '../pje/search.ts'
+import { fetchAllMovements } from '../pje/movement-pages.ts'
 import { fetchDetail, type DocumentRef, type BinaryDocumentRef, type HtmlDocumentRef, type DetailResult, type ProcessFields } from '../pje/detail.ts'
 import { downloadDocument } from '../pje/download.ts'
 import { parseCaseRecord, parseMovements, extractPdfText, type CaseRecord } from '../pdf/parse.ts'
@@ -52,6 +53,7 @@ export type DeepStepEvent =
   | { kind: 'case_file'; ref: string }
   | { kind: 'case_file_ok'; ref: string; documentCount: number }
   | { kind: 'documents'; ref: string; total: number; alreadyOnDisk: number }
+  | { kind: 'movements_page'; ref: string; page: number; of: number }
 
 export interface DeepOptions {
   onDocumentProgress?: (p: DeepDocumentProgress) => void
@@ -203,6 +205,7 @@ function storeParties(db: Db, idProcessoTrf: number, detail: ValidDetail): void 
       `Parsed ${ativo} ativo / ${passivo} passivo parties but the page states ` +
       `${detail.partiesAtivoTotal ?? '?'} / ${detail.partiesPassivoTotal ?? '?'} — ` +
       'the Datascroller is hiding a further page, never followed by this scraper.',
+      idProcessoTrf,
     )
   } else {
     resolveFailure(db, 'parties', String(idProcessoTrf))
@@ -227,6 +230,7 @@ function checkMovementsTruncation(db: Db, idProcessoTrf: number, movements: read
       db, 'movements', String(idProcessoTrf),
       `Parsed ${movements.length} movements from the summary PDF but the detail page states ` +
       `${detail.movementsTotal} — the "PDF has the complete log" assumption may have broken for this case.`,
+      idProcessoTrf,
     )
   } else {
     resolveFailure(db, 'movements', String(idProcessoTrf))
@@ -482,7 +486,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     // like `crawl` does (see `enumerate.ts`): a case whose detail page never
     // resolves should still keep the procedural log its summary PDF already
     // gave up for free.
-    const movements = parseMovements(report.pdf)
+    let movements = parseMovements(report.pdf)
     replaceMovementsForCase(db, idProcessoTrf, movements)
 
     let detail: DetailResult | null = null
@@ -515,6 +519,27 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
     // and the first upsert above ran with none of this yet known.
     upsertCase(db, caseUpsertFromRecord(idProcessoTrf, record, ca, summaryKey, detail.processFields))
     storeParties(db, idProcessoTrf, detail)
+
+    // The movements, now from where they are actually published. One extra
+    // request per page of fifteen beyond the first, and none at all for a
+    // case whose log already fits on one. The PDF's version stays as the
+    // fallback for a case whose detail page never resolved at all.
+    const fromTable = ca === null
+      ? null
+      : await fetchAllMovements(
+          caseClient, ca, detail.html, detail.movementsTotal,
+          (page, of) => opts.onStep?.({ kind: 'movements_page', ref: targetRef, page, of }),
+        )
+    if (fromTable !== null) {
+      // Positioned by where they sit in the table, which is the only stable
+      // key these rows have — the portal gives them no id of their own.
+      movements = fromTable.map((row, position) => ({
+        position,
+        timestamp: row.timestamp,
+        description: row.description,
+      }))
+      replaceMovementsForCase(db, idProcessoTrf, movements)
+    }
     checkMovementsTruncation(db, idProcessoTrf, movements, detail)
 
     let stored = 0
@@ -545,7 +570,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
           // failed. What is missing goes in `failures` all the same, under
           // the same kind and ref as an outright download failure, rather
           // than being quietly dropped because most of the row made it.
-          recordFailure(db, 'document', String(docRef.id), partial)
+          recordFailure(db, 'document', String(docRef.id), partial, idProcessoTrf)
         } else {
           // This document may have failed on an earlier run; it just
           // succeeded, so any such record is no longer accurate (mirrors
@@ -555,7 +580,7 @@ export async function deepCase(deps: DeepDeps, target: DeepTarget, opts: DeepOpt
         opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'stored' })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        recordFailure(db, 'document', String(docRef.id), message)
+        recordFailure(db, 'document', String(docRef.id), message, idProcessoTrf)
         failed++
         opts.onDocumentProgress?.({ idProcessoTrf, idProcessoDoc: docRef.id, docKind: docRef.kind, outcome: 'failed' })
       }

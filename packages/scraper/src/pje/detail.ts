@@ -445,8 +445,14 @@ export type DetailResult =
       parties: PartyInput[]
       partiesAtivoTotal: number | null
       partiesPassivoTotal: number | null
-      /** The page's own stated movements count — see `parseMovementsTotal`; the rows themselves come from the PDF. */
+      /** The page's own stated movements count — see `parseMovementsTotal`. */
       movementsTotal: number | null
+      /**
+       * The page as it arrived. Kept because the movements pager reads its
+       * ids off it — the slider's submit control is named only inside an
+       * `onchange` script, so there is nothing to hand back but the markup.
+       */
+      html: string
     }
   | { kind: 'invalid' }
 
@@ -506,6 +512,7 @@ export async function fetchDetail(
       partiesAtivoTotal: ativoTotal,
       partiesPassivoTotal: passivoTotal,
       movementsTotal: parseMovementsTotal(html),
+      html,
     }
   }
   if (html.includes(ACCESS_DENIED_MARKER)) {

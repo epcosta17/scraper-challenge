@@ -18,17 +18,16 @@ const REAL_NUMBER = '0013475-36.2026.4.05.0000'
 const detailWithDocs = fixture('detail-with-docs.html') // 9 binary + 1 html doc
 const detailHtmlOnly = fixture('detail-html-docs-only.html') // 0 binary + 2 html doc
 // `detailHtmlOnly` and `realSummaryPdf` are live captures of two different,
-// unrelated real cases, glued together purely for document-shape tests —
-// nothing about them agrees, including the movements count `checkMovementsTruncation`
-// now cross-checks between the two (see `deep.ts`). Patching just that one
-// stated total (7 -> the 10 movements `realSummaryPdf`'s own PDF actually
-// contains — verified in `pdf-parse.test.ts`) keeps that check quiet for
-// tests that pair the two and assert on failures, without touching anything
-// else `detailHtmlOnly` is used for elsewhere in this file.
-const detailHtmlOnlyMatchingMovements = Buffer.from(
-  detailHtmlOnly.toString('latin1').replace('7 resultados encontrados', '10 resultados encontrados'),
-  'latin1',
-)
+// unrelated real cases, glued together purely for document-shape tests, so
+// nothing about them agrees. This used to patch the page's stated movements
+// total up from 7 to the summary PDF's 10, to keep `checkMovementsTruncation`
+// quiet for tests that pair the two.
+//
+// The patch is gone because the disagreement is: the movements now come from
+// the same page that declares them, and this fixture agrees with itself —
+// seven stated, seven in the table. Left as an alias so the tests that used
+// it still read the way they did.
+const detailHtmlOnlyMatchingMovements = detailHtmlOnly
 const detailInvalidCa = fixture('detail-invalid-ca.html')
 const listViewSession = fixture('list-view.html') // action=..., submitParam=fPP:j_id244
 const samplePdf = fixture('sample-document.pdf')
@@ -190,24 +189,23 @@ describe('deepCase', () => {
     expect(parties.filter((p) => p.polo === 'ativo')).toHaveLength(2)
     expect(parties.filter((p) => p.polo === 'passivo')).toHaveLength(1)
 
-    // From the summary PDF's own log (10 entries — see pdf-parse.test.ts),
-    // not the detail page's own table (which states only 5 for this
-    // fixture): proof `deepCase` wires movements to the PDF source, not the
-    // HTML one.
+    // From the detail page's own table, not the summary PDF: this assertion
+    // is the inverse of what it used to be, and deliberately so. The PDF
+    // version counted movements by matching timestamps in extracted text, and
+    // on a long case that count drifts above what the page declares — 4,200
+    // against 4,182 on a real one. A row in a table cannot drift.
+    //
+    // `detailWithDocs` states 5 and `realSummaryPdf` yields 10: they are live
+    // captures of two unrelated cases glued together for this test's
+    // document-shape assertions, and were never going to agree. Which number
+    // shows up here is therefore exactly the proof of which source is wired.
     const movements = getMovementsByCase(db, 1)
-    expect(movements).toHaveLength(10)
-    expect(movements[0]).toMatchObject({ position: 0, description: 'Publicado Decisão em 27/08/2026.' })
+    expect(movements).toHaveLength(5)
+    expect(movements[0]!.position).toBe(0)
 
-    // `detailWithDocs` (5 declared) and `realSummaryPdf` (10 actual) are live
-    // captures of two different, unrelated cases glued together for this
-    // test's document-shape assertions — they were never going to agree on
-    // a movements count. That disagreement is exactly what
-    // `checkMovementsTruncation` exists to surface rather than swallow;
-    // asserting it here turns what would otherwise be an untested side
-    // effect of this test's fixture choice into a documented one.
-    const movementsFailure = listFailures(db).find((f) => f.kind === 'movements')
-    expect(movementsFailure).toBeDefined()
-    expect(movementsFailure!.resolvedAt).toBeNull()
+    // And with the count now taken from the same page that declares it, the
+    // disagreement this used to record is gone.
+    expect(listFailures(db).some((f) => f.kind === 'movements' && f.resolvedAt === null)).toBe(false)
   })
 
   it('falls back to the search bridge when the cached ca is stale, and updates the stored value', async () => {
@@ -443,16 +441,12 @@ describe('deepCase parties/movements truncation', () => {
     })
     const client = fakePortal({
       summaryPdf: () => ({ body: realSummaryPdf }),
-      // `detailWithDocs`' own parties totals (2 ativo / 1 passivo) already
-      // match what it renders; only its movements total needs patching to
-      // agree with `realSummaryPdf`'s real 10-entry log (see
-      // `detailHtmlOnlyMatchingMovements` above for the same trick).
-      detail: () => ({
-        body: Buffer.from(
-          detailWithDocs.toString('latin1').replace('5 resultados encontrados', '10 resultados encontrados'),
-          'latin1',
-        ),
-      }),
+      // `detailWithDocs` already agrees with itself: 2 ativo / 1 passivo, and
+      // a movements table of five under a stated five. It used to need its
+      // movements total patched up to ten so it would agree with the summary
+      // PDF's log — which stopped being necessary the moment the movements
+      // started coming from the table that declares them.
+      detail: () => ({ body: detailWithDocs }),
       binaryDoc: () => ({ body: samplePdf }),
       htmlDoc: () => ({ body: Buffer.from('<html>ato judicial</html>', 'latin1') }),
     })
@@ -462,7 +456,7 @@ describe('deepCase parties/movements truncation', () => {
     expect(listFailures(db, { unresolvedOnly: true }).map((f) => f.kind)).not.toContain('parties')
     expect(listFailures(db, { unresolvedOnly: true }).map((f) => f.kind)).not.toContain('movements')
     expect(getPartiesByCase(db, 1)).toHaveLength(3)
-    expect(getMovementsByCase(db, 1)).toHaveLength(10)
+    expect(getMovementsByCase(db, 1)).toHaveLength(5)
   })
 
   // The truncation contract this feature exists for: a page that states

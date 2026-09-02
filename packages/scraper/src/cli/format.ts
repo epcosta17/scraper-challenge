@@ -109,6 +109,10 @@ export function deepStepLine(e: DeepStepEvent, tag: string): string {
       }`)
     case 'detail_key_retry':
       return line(`! search bridge failed: ${e.reason} - retry ${e.attempt} of ${e.of}`)
+    case 'movements_page':
+      // Named per page because a long case is 279 of them: a run that only
+      // said "reading the case file" for twenty minutes would look hung.
+      return line(`reading the movements table: page ${e.page} of ${e.of}`)
     case 'case_file':
       return line('reading the case file')
     case 'case_file_ok':
