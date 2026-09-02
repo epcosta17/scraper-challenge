@@ -275,3 +275,30 @@ button, input, select { font: inherit; color: inherit; }
   .split { flex-direction: column; }
   .split__aside { width: auto; }
 }
+
+/*
+  The nav pill while a worker is working.
+
+  A slow pulse rather than a spinner: it says "something is happening" from
+  the corner of the eye without asking to be watched, and the words beside it
+  carry the detail — which step, how far along, how many still queued.
+*/
+.dot--busy {
+  background: var(--warn);
+  animation: nav-pulse 1.4s ease-in-out infinite;
+}
+@keyframes nav-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+/* A viewer who asked for less motion keeps the colour and loses the pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .dot--busy { animation: none; }
+}
+
+.status-pill [data-nav-text] {
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -1,5 +1,6 @@
 ---
 import Nav from '../components/Nav.astro'
+import RunningJob from '../components/RunningJob.astro'
 import ArchiveNotice from '../components/ArchiveNotice.astro'
 import '../styles/app.css'
 
@@ -35,5 +36,8 @@ const { title, description, current = null } = Astro.props
         <slot />
       </main>
     </div>
+
+    {/* Floats over every page, empty until a worker is actually working. */}
+    <RunningJob />
   </body>
 </html>

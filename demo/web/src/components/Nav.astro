@@ -42,8 +42,16 @@ const links = [
         ? 'Estado de la captura — abre los procesos en curso'
         : 'No hay acervo que leer — abre los procesos en curso'}
     >
-      <span class:list={['dot', ready ? 'dot--ok' : 'dot--bad']}></span>
-      <span>{ready ? `Sincronizado ${stats.lastSyncLabel}` : 'Sin acervo'}</span>
+      {/*
+        Two things in one place, because they answer the same question from
+        opposite ends: what the acervo is, and what is happening to it right
+        now. A capture takes minutes and its progress used to live only on the
+        queue screen — so anywhere else, the site looked idle while a worker
+        was busy. This says so on every page, and stays quiet when nothing is
+        running.
+      */}
+      <span class:list={['dot', ready ? 'dot--ok' : 'dot--bad']} data-nav-dot></span>
+      <span data-nav-text>{ready ? `Sincronizado ${stats.lastSyncLabel}` : 'Sin acervo'}</span>
     </a>
   </nav>
 </header>

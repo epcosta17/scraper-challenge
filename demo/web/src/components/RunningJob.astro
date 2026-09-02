@@ -1,0 +1,166 @@
+---
+/**
+ * The job being captured right now, floating over whatever page you are on.
+ *
+ * A capture takes minutes, and its row lived only on the queue screen — so
+ * from anywhere else the site looked idle while a worker was working. This is
+ * that same row, with everything it carries: what kind of job, what it is
+ * pointed at, which step the engine is on, how far along, how many tries it
+ * has taken and how long it has been going.
+ *
+ * Empty markup until something runs. It is filled by the one poll on the page,
+ * which also drives the nav pill — two pollers asking the same endpoint for
+ * the same answer would be one too many.
+ */
+---
+
+<aside class="run" id="running-job" hidden aria-live="polite">
+  <a class="run__link" href="/procesos">
+    <span class="run__head">
+      <span class="dot dot--busy" aria-hidden="true"></span>
+      <span class="run__kind mono" data-run-kind></span>
+      <span class="run__spacer"></span>
+      <span class="run__count mono num" data-run-count></span>
+    </span>
+
+    <span class="run__target" data-run-target></span>
+    <span class="run__stage" data-run-stage></span>
+
+    <span class="run__bar" aria-hidden="true"><span class="run__fill" data-run-fill></span></span>
+
+    <span class="run__foot mono" data-run-foot></span>
+  </a>
+</aside>
+
+<style>
+  .run {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 60;
+    width: 320px;
+    border: 1px solid var(--line-strong);
+    background: var(--paper);
+    box-shadow: 0 8px 28px rgb(17 17 17 / 14%);
+  }
+  /* An author display would beat the browser's own `[hidden]`, as it did on
+     the queue screen's panels. Said here so it cannot. */
+  .run[hidden] { display: none; }
+
+  .run__link { display: flex; flex-direction: column; gap: 7px; padding: 12px 14px; }
+  .run__head { display: flex; align-items: center; gap: 8px; }
+  .run__kind { font-size: 11px; color: var(--ink); }
+  .run__spacer { flex: 1 1 auto; }
+  .run__count { font-size: 11px; color: var(--ink-2); }
+
+  .run__target,
+  .run__stage,
+  .run__foot {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .run__target { font-size: 13px; color: var(--ink-2); }
+  .run__stage { font-size: 11px; color: var(--ink-3); }
+  .run__stage:empty { display: none; }
+  .run__foot { font-size: 10px; color: var(--ink-3); }
+
+  /*
+    The bar is the only thing here that can lie: with no known total there is
+    no fraction to draw, so it is hidden rather than shown full or crawling.
+  */
+  .run__bar { height: 2px; background: var(--line); }
+  .run__bar[hidden] { display: none; }
+  .run__fill { display: block; height: 100%; background: var(--ink); transition: width 240ms ease; }
+
+  @media (max-width: 640px) {
+    .run { right: 12px; left: 12px; bottom: 12px; width: auto; }
+  }
+</style>
+
+<script>
+  /**
+   * The one poll on the page.
+   *
+   * It fills the floating card and the nav pill from the same answer, and
+   * stops the moment nothing is running or queued — an idle site makes no
+   * requests at all. Everything it shows is read off the job row the worker is
+   * updating; nothing here is estimated from elapsed time.
+   */
+  const card = document.getElementById('running-job')
+  const navDot = document.querySelector<HTMLElement>('[data-nav-dot]')
+  const navText = document.querySelector<HTMLElement>('[data-nav-text]')
+
+  if (card) {
+    const kind = card.querySelector<HTMLElement>('[data-run-kind]')!
+    const target = card.querySelector<HTMLElement>('[data-run-target]')!
+    const stage = card.querySelector<HTMLElement>('[data-run-stage]')!
+    const count = card.querySelector<HTMLElement>('[data-run-count]')!
+    const foot = card.querySelector<HTMLElement>('[data-run-foot]')!
+    const fill = card.querySelector<HTMLElement>('[data-run-fill]')!
+    const bar = fill.parentElement!
+    const idleText = navText?.textContent ?? ''
+
+    const since = (started: string | null): string => {
+      if (started === null) return ''
+      // The worker writes `started_at` as SQLite's UTC `datetime('now')`,
+      // which has no zone marker; read as local it would come out hours off.
+      const at = Date.parse(`${started.replace(' ', 'T')}Z`)
+      if (Number.isNaN(at)) return ''
+      const s = Math.max(0, Math.round((Date.now() - at) / 1000))
+      return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
+    }
+
+    const tick = async (): Promise<void> => {
+      let payload: any
+      try {
+        const response = await fetch('/cola.json', { headers: { accept: 'application/json' } })
+        if (!response.ok) return
+        payload = await response.json()
+      } catch {
+        // The capture is happening in another process either way; the next
+        // tick will say where it got to.
+        return
+      }
+
+      const job = (payload.jobs ?? []).find((j: any) => j.state === 'running')
+      const queued = (payload.counts?.queued ?? 0) as number
+
+      if (job) {
+        const { done, total, totalIsEstimate } = job.progress ?? {}
+        kind.textContent = job.kind
+        target.textContent = job.target
+        stage.textContent = job.stage ?? ''
+        count.textContent = total
+          ? `${done} / ${totalIsEstimate ? '~' : ''}${total}`
+          : (done ? String(done) : '')
+
+        const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0
+        bar.hidden = !total
+        fill.style.width = `${pct}%`
+
+        const tries = job.attempts === 1 ? '1 intento' : `${job.attempts} intentos`
+        const rest = queued > 0 ? ` · ${queued} en cola` : ''
+        foot.textContent = `${tries} · ${since(job.startedAt)}${rest}`
+
+        card.hidden = false
+        if (navDot && navText) {
+          navDot.classList.add('dot--busy')
+          navText.textContent = `${job.stage ?? job.kind}${count.textContent ? ` ${count.textContent}` : ''}${rest}`
+        }
+      } else {
+        card.hidden = true
+        if (navDot && navText) {
+          navDot.classList.remove('dot--busy')
+          // Back to what the server rendered, not to an invented "listo": the
+          // sync label is a fact the page already had.
+          navText.textContent = queued > 0 ? `${queued} en cola` : idleText
+        }
+      }
+
+      if (payload.active) setTimeout(tick, 1500)
+    }
+
+    void tick()
+  }
+</script>
