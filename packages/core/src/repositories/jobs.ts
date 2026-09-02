@@ -238,11 +238,17 @@ export interface JobProgressUpdate {
  * Records how far the current attempt has got, so a dashboard can render
  * `217 / 300` instead of only "running".
  *
- * Guarded on `status = 'running'`, which makes this the *only* way progress
- * reaches the table and makes that path unable to do damage: a worker whose
- * lease was reclaimed while it was mid-request writes nothing here rather
- * than resurrecting a heartbeat on a job somebody else now owns, and a late
- * report arriving after `completeJob` cannot un-finish a finished row.
+ * Guarded the same way `heartbeatJob` is, and for the same reason: on
+ * `status = 'running'` so a late report arriving after `completeJob` cannot
+ * un-finish a finished row, and on `expectedAttempts` so a report can only
+ * ever land on the attempt that produced it. The status test alone is not
+ * enough — a job reclaimed from a stalled worker and picked up by another is
+ * `running` again, so the stalled worker's next report would walk the count
+ * backwards on top of the live attempt and, worse, keep renewing a lease it
+ * no longer holds. A job whose second worker then died would never be
+ * reclaimed, because a zombie was signing for it. Omitted, this degrades to
+ * the status test alone, which is right for a caller that only means "this
+ * job, whoever is running it".
  *
  * A report is also a sign of life, so it refreshes the lease in the same
  * statement. A worker publishing progress is by definition not dead, and
@@ -256,18 +262,25 @@ export interface JobProgressUpdate {
  * That is why the SET list is built rather than fixed; the values are still
  * bound, never interpolated.
  */
-export function updateJobProgress(db: Db, id: number, p: JobProgressUpdate): void {
+export function updateJobProgress(
+  db: Db,
+  id: number,
+  p: JobProgressUpdate,
+  expectedAttempts?: number,
+): void {
   const sets = ['progress_done = @done', "heartbeat_at = datetime('now')"]
   if (p.total !== undefined) sets.push('progress_total = @total')
   if (p.totalIsEstimate !== undefined) sets.push('progress_total_is_estimate = @estimate')
   db.prepare(`
     UPDATE jobs SET ${sets.join(', ')}
      WHERE id = @id AND status = 'running'
+       AND (@attempts IS NULL OR attempts = @attempts)
   `).run({
     id,
     done: p.done,
     total: p.total ?? null,
     estimate: p.totalIsEstimate === true ? 1 : 0,
+    attempts: expectedAttempts ?? null,
   })
 }
 

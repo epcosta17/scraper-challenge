@@ -123,7 +123,7 @@ export function createWorker(deps: WorkerDeps, opts: WorkerOptions = {}): Worker
   async function execute(job: Job): Promise<void> {
     const handler = handlers[job.type]
     const publisher = createProgressPublisher({
-      write: (p) => updateJobProgress(db, job.id, p),
+      write: (p) => updateJobProgress(db, job.id, p, job.attempts),
       minIntervalMs: opts.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS,
     })
 

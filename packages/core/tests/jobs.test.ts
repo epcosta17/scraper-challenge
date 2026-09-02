@@ -375,6 +375,39 @@ describe('progress', () => {
     updateJobProgress(db, id, { done: 99 })
     expect(getJob(db, id)!.progress.done).toBe(0)
   })
+
+  it('ignores an update from a worker whose attempt was reclaimed', () => {
+    const id = enqueueJob(db, 'crawl', { fromId: 1, toId: 100 }).id
+    const mine = claimNextJob(db)!
+    updateJobProgress(db, id, { done: 7, total: 100 }, mine.attempts)
+
+    // This worker goes quiet, the job is reclaimed, another worker takes it
+    // and gets further than this one ever did.
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-1 hour') WHERE id = ?").run(id)
+    reclaimStaleJobs(db, { leaseMs: 60_000 })
+    const theirs = claimNextJob(db)!
+    updateJobProgress(db, id, { done: 40, total: 100 }, theirs.attempts)
+
+    // The stale worker wakes up and publishes its own count. Dropping it is
+    // the point: writing it would walk the number backwards on a screen
+    // somebody is watching, and refresh a lease this worker no longer holds.
+    updateJobProgress(db, id, { done: 8, total: 100 }, mine.attempts)
+    expect(getJob(db, id)!.progress.done).toBe(40)
+  })
+
+  it('cannot keep a dead worker\'s lease alive from a previous attempt', () => {
+    const id = enqueueJob(db, 'crawl').id
+    const mine = claimNextJob(db)!
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-1 hour') WHERE id = ?").run(id)
+    reclaimStaleJobs(db, { leaseMs: 60_000 })
+    claimNextJob(db)
+    db.prepare("UPDATE jobs SET heartbeat_at = datetime('now', '-1 hour') WHERE id = ?").run(id)
+
+    // The second worker has now died too. A report from the first must not
+    // stand in for it, or the job stays running forever with nobody on it.
+    updateJobProgress(db, id, { done: 3 }, mine.attempts)
+    expect(reclaimStaleJobs(db, { leaseMs: 60_000 })).toBe(1)
+  })
 })
 
 describe('heartbeatJob', () => {
