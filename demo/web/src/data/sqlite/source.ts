@@ -524,6 +524,7 @@ const toJob = (j: StoredJob): Job => ({
   startedAt: j.startedAt,
   finishedAt: j.finishedAt,
   error: j.error,
+  progress: j.progress,
 })
 
 const toCaptureFailure = (f: Failure): CaptureFailure => ({

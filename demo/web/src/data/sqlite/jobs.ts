@@ -12,12 +12,12 @@ import type { JobKind } from '../types.ts'
  *
  *   deep_case     { "number": "0800120-05.2024.4.05.8306" } | { "id": 130105 }
  *   refresh_case  { "number": "…" }                        | { "id": 130105 }
- *   backfill      { "fromId": 130100, "toId": 130400 }
- *   discover      { "fromId": 130100, "toId": 130400 }      | {}
+ *   deep_range    { "fromId": 130100, "toId": 130400 }
+ *   crawl         { "fromId": 130100, "toId": 130400 }      | {}
  *
  * `deep_case`/`refresh_case` take one case, by the number a person can read
- * off the screen or by the portal's internal id. `backfill` takes a closed id
- * range and needs both ends. `discover` walks forward from the watermark and
+ * off the screen or by the portal's internal id. `deep_range` takes a closed
+ * id range and needs both ends. `crawl` walks forward from the watermark and
  * takes an optional range to bound it.
  */
 
@@ -41,7 +41,7 @@ export function parseTarget(kind: JobKind, raw: string): TargetParse {
 
   if (kind === 'deep_case' || kind === 'refresh_case') {
     if (CASE_NUMBER_RE.test(value)) return { ok: true, payload: { number: value } }
-    if (ID_RE.test(value)) return { ok: true, payload: { id: Number(value) } }
+    if (ID_RE.test(value)) return { ok: true, payload: { idProcessoTrf: Number(value) } }
     return {
       ok: false,
       error: 'Indica un nº de expediente (0800120-05.2024.4.05.8306) o un id interno (130105).',
@@ -49,12 +49,12 @@ export function parseTarget(kind: JobKind, raw: string): TargetParse {
   }
 
   const range = RANGE_RE.exec(value)
-  if (kind === 'backfill') {
-    if (!range) return { ok: false, error: 'Un backfill necesita un rango de ids: 130100–130400.' }
+  if (kind === 'deep_range') {
+    if (!range) return { ok: false, error: 'Una captura profunda por rango necesita un rango de ids: 130100–130400.' }
     return rangePayload(range)
   }
 
-  // discover
+  // crawl
   if (value === '') return { ok: true, payload: {} }
   if (!range) return { ok: false, error: 'Deja el objetivo vacío para seguir la marca de agua, o indica un rango: 130100–130400.' }
   return rangePayload(range)
@@ -75,7 +75,7 @@ function rangePayload(range: RegExpExecArray): TargetParse {
  */
 export function describeTarget(payload: JobPayload): string {
   if (typeof payload.number === 'string') return payload.number
-  if (typeof payload.id === 'number') return `id ${payload.id}`
+  if (typeof payload.idProcessoTrf === 'number') return `id ${payload.idProcessoTrf}`
   if (typeof payload.fromId === 'number' && typeof payload.toId === 'number') {
     return `ids ${payload.fromId}–${payload.toId}`
   }
@@ -84,7 +84,7 @@ export function describeTarget(payload: JobPayload): string {
   return JSON.stringify(payload)
 }
 
-export const JOB_KINDS: readonly JobKind[] = ['deep_case', 'refresh_case', 'backfill', 'discover']
+export const JOB_KINDS: readonly JobKind[] = ['deep_case', 'refresh_case', 'deep_range', 'crawl']
 
 export const isJobKind = (value: string): value is JobKind =>
   (JOB_KINDS as readonly string[]).includes(value)

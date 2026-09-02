@@ -301,7 +301,7 @@ describe('the queue', () => {
 
   it('refuses a target the worker could not act on, and enqueues nothing', async () => {
     const before = (await source().captureOverview()).jobs.length
-    const outcome = await source().enqueue('backfill', 'no es un rango')
+    const outcome = await source().enqueue('deep_range', 'no es un rango')
     expect(outcome).toEqual({ ok: false, error: expect.stringContaining('rango') })
     expect((await source().captureOverview()).jobs).toHaveLength(before)
   })

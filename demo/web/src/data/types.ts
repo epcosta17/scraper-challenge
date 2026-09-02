@@ -1,3 +1,5 @@
+import type { JobType } from '@pje/core'
+
 /**
  * The shapes the pages render. They are deliberately *view* types, not a copy
  * of the storage rows: a number is `Coverage` wherever the portal declares a
@@ -187,7 +189,18 @@ export interface SearchResult {
  * parallel vocabulary. The screen offers what a worker can be asked for and
  * nothing else.
  */
-export type JobKind = 'discover' | 'refresh_case' | 'deep_case' | 'backfill'
+/**
+ * The job types this screen can put on the queue — the worker's own
+ * vocabulary, deliberately, so one name means one thing across the CLI, the
+ * worker and here.
+ *
+ * It is a *subset* of core's `JobType`, not a copy: the worker still answers
+ * to `discover` and `backfill` for rows enqueued before those collapsed into
+ * `crawl` (a crawl with no range and a crawl with one), and the queue below
+ * has to be able to show such a row. So what a job *is* is `JobType`, and
+ * what this form can *create* is `JobKind`.
+ */
+export type JobKind = 'crawl' | 'deep_range' | 'deep_case' | 'refresh_case'
 
 /** `pending` is called `queued` here, and only here: it is the word the screen uses. */
 export type JobState = 'running' | 'queued' | 'done' | 'failed'
@@ -202,7 +215,7 @@ export type JobState = 'running' | 'queued' | 'done' | 'failed'
  */
 export interface Job {
   id: number
-  kind: JobKind
+  kind: JobType
   /** The payload, read back as the words a person typed to enqueue it. */
   target: string
   state: JobState
@@ -214,6 +227,15 @@ export interface Job {
   finishedAt: string | null
   /** Why the last attempt failed; survives into the retry, so it stays visible. */
   error: string | null
+  /**
+   * How far the *current* attempt has got. `total` is null when the run has
+   * no knowable end — a crawl walking the watermark until it runs out of
+   * cases — and `totalIsEstimate` marks one the worker may stop short of.
+   * `done` describes this attempt only: a requeued job starts again at zero,
+   * while a job that failed for good keeps its count, because "gave up after
+   * 217 of 300" is the most useful thing that row can still say.
+   */
+  progress: { done: number; total: number | null; totalIsEstimate: boolean }
 }
 
 export interface CaptureFailure {

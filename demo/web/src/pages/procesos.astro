@@ -11,10 +11,10 @@ import { formatInt } from '../lib/format.ts'
  * The queue screen. It enqueues and it reads; it never runs a capture.
  *
  * A POST here inserts one row into `jobs` and redirects — an external worker
- * is what claims it, does the HTTP and writes the result back. That is why
- * nothing on this page has a progress bar: the queue records what a job *is*
- * and what has happened to it (attempts, when the current attempt started,
- * when it ended, why it failed) and no column yet says how far along it is.
+ * is what claims it, does the HTTP and writes the result back, progress
+ * included. So the count on a running row is genuinely live: it is the
+ * worker's own report, read straight off the row it is updating, not this
+ * page guessing from elapsed time.
  */
 let flash: { kind: 'ok' | 'bad'; text: string } | null = null
 
@@ -64,8 +64,8 @@ const STATE_LABEL: Record<Job['state'], string> = {
 const KIND_HINT: Record<JobKind, string> = {
   deep_case: 'un expediente entero (nº o id interno)',
   refresh_case: 'relee uno ya capturado (nº o id interno)',
-  backfill: 'repite un rango de ids: 130100–130400',
-  discover: 'busca ids nuevos; vacío sigue la marca de agua',
+  deep_range: 'baja un rango entero con sus documentos: 130100–130400',
+  crawl: 'recorre ids buscando expedientes; vacío sigue la marca de agua',
 }
 
 const TARGET_PLACEHOLDER = '0800120-05.2024.4.05.8306  ·  130105  ·  130100–130400'
@@ -81,7 +81,20 @@ const kpis = [
   { value: formatInt(overview.openFailures), label: 'fallos sin resolver', tone: overview.openFailures > 0 ? 'bad' : 'muted' },
 ]
 
-const columns = ['TIPO', 'OBJETIVO', 'INTENTOS', 'TIEMPOS', 'ESTADO']
+const columns = ['TIPO', 'OBJETIVO', 'AVANCE', 'INTENTOS', 'TIEMPOS', 'ESTADO']
+
+/**
+ * What a job's counter reads. A queued job has nothing to say yet, so it says
+ * nothing rather than `0 / ?`, which would look like a run that has stalled.
+ * A total of null is a run with no knowable end — the count alone is the
+ * whole truth there — and `~` marks a total the worker may stop short of.
+ */
+function progressOf(j: Job): string | null {
+  if (j.state === 'queued') return null
+  const { done, total, totalIsEstimate } = j.progress
+  if (total === null) return done === 0 ? null : formatInt(done)
+  return `${formatInt(done)} / ${totalIsEstimate ? '~' : ''}${formatInt(total)}`
+}
 ---
 
 <Base
@@ -130,6 +143,7 @@ const columns = ['TIPO', 'OBJETIVO', 'INTENTOS', 'TIEMPOS', 'ESTADO']
                     {j.target}
                     {j.error !== null && <span class="job__error">{j.error}</span>}
                   </span>
+                  <span class="job__progress mono num">{progressOf(j) ?? '—'}</span>
                   <span class="job__attempts mono num">{formatInt(j.attempts)}</span>
                   <span class="job__times mono">
                     {clock(j.startedAt ?? j.createdAt)}
@@ -153,9 +167,10 @@ const columns = ['TIPO', 'OBJETIVO', 'INTENTOS', 'TIEMPOS', 'ESTADO']
       }
 
       <p class="note">
-        La tabla <span class="mono">jobs</span> no guarda progreso: un trabajo sabe cuántos intentos
-        ha costado y cuándo empezó, no por dónde va. Mientras no exista esa columna, esta pantalla
-        no la inventa.
+        El avance lo escribe el worker en la propia fila mientras trabaja, así que esta pantalla
+        lo lee, no lo estima: recarga y verás moverse el número. Cuenta expedientes en un rango y
+        documentos en un expediente suelto. Un <span class="mono">~</span> delante del total marca
+        una estimación, y un trabajo sin final conocido enseña solo lo hecho.
       </p>
     </div>
 
@@ -291,7 +306,7 @@ const columns = ['TIPO', 'OBJETIVO', 'INTENTOS', 'TIEMPOS', 'ESTADO']
 
   .job {
     display: grid;
-    grid-template-columns: 96px minmax(0, 1fr) 64px 132px 106px;
+    grid-template-columns: 96px minmax(0, 1fr) 88px 64px 132px 106px;
     align-items: baseline;
     gap: 16px;
   }
