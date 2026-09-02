@@ -300,7 +300,7 @@ function progressOf(j: Job): string | null {
           overview.failures.length === 0 ? (
             <p class="empty">Ninguno. Cada captura que sale bien cierra los fallos que dejó la anterior.</p>
           ) : (
-            <ul>
+            <ul class="failures">
               {overview.failures.map((f) => (
                 <li class="failure">
                   <span class="failure__top">
