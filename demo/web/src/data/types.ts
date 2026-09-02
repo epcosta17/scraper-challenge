@@ -209,7 +209,7 @@ export interface SearchSnippet {
 }
 
 /** Which index a case turned up in; a hit can come from more than one. */
-export type SearchSource = 'case' | 'party' | 'document'
+export type SearchSource = 'case' | 'party' | 'document' | 'movement'
 
 export interface SearchHit {
   number: string

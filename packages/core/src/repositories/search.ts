@@ -8,7 +8,7 @@ export class SearchQueryError extends Error {
 }
 
 /** Which index a case turned up in. A hit can come from more than one. */
-export type SearchSource = 'case' | 'party' | 'document'
+export type SearchSource = 'case' | 'party' | 'document' | 'movement'
 
 export interface SearchSnippet {
   idProcessoDocumento: number
@@ -199,12 +199,28 @@ party_hit AS MATERIALIZED (
 party_match AS (
   SELECT case_id, MAX(score) AS score FROM party_hit GROUP BY case_id
 ),
+-- Split for the same reason party_hit is: bm25() may not appear inside an
+-- aggregate, and MATERIALIZED stops SQLite flattening this into the MAX()
+-- below and reintroducing exactly that.
+movement_hit AS MATERIALIZED (
+  SELECT m.id_processo_trf AS case_id, -bm25(movements_fts) AS score
+  FROM movements_fts
+  JOIN movements m ON m.id = movements_fts.rowid
+  WHERE movements_fts MATCH @q
+),
+-- One row per case however many of its movements matched: a case with forty
+-- "Conclusos para julgamento" entries is still one result.
+movement_match AS (
+  SELECT case_id, MAX(score) AS score FROM movement_hit GROUP BY case_id
+),
 matched AS (
   SELECT case_id FROM best_doc
   UNION
   SELECT case_id FROM case_match
   UNION
   SELECT case_id FROM party_match
+  UNION
+  SELECT case_id FROM movement_match
 )
 `
 
@@ -227,6 +243,7 @@ best_doc AS (
 ),
 case_match AS (SELECT NULL AS case_id, 0 AS score WHERE 0),
 party_match AS (SELECT NULL AS case_id, 0 AS score WHERE 0),
+movement_match AS (SELECT NULL AS case_id, 0 AS score WHERE 0),
 matched AS (SELECT id_processo_trf AS case_id FROM cases)
 `
 
@@ -243,19 +260,25 @@ SELECT
   bd.case_id IS NOT NULL AS matched_document,
   cm.case_id IS NOT NULL AS matched_case,
   pm.case_id IS NOT NULL AS matched_party,
+  mm.case_id IS NOT NULL AS matched_movement,
   -- Summed rather than maxed, so a case that matches in its metadata *and*
   -- its documents outranks one that only matches in one of them. The three
   -- bm25 scales are not calibrated against each other (a long PDF and a
   -- one-line party name cannot be), so this is a deliberate heuristic, not a
   -- probability: it orders sensibly within a source and rewards breadth
   -- across sources.
-  COALESCE(bd.score, 0) + COALESCE(cm.score, 0) + COALESCE(pm.score, 0) AS score,
+  -- The timeline is weighted a third of the others on purpose: its phrases
+  -- are boilerplate the registry repeats across every case, so matching one
+  -- says far less about relevance than matching a party or a judgment does.
+  COALESCE(bd.score, 0) + COALESCE(cm.score, 0) + COALESCE(pm.score, 0)
+    + COALESCE(mm.score, 0) * 0.33 AS score,
   COUNT(*) OVER () AS total
 FROM matched
 JOIN cases c ON c.id_processo_trf = matched.case_id
 LEFT JOIN best_doc bd ON bd.case_id = matched.case_id
 LEFT JOIN case_match cm ON cm.case_id = matched.case_id
 LEFT JOIN party_match pm ON pm.case_id = matched.case_id
+LEFT JOIN movement_match mm ON mm.case_id = matched.case_id
 {{WHERE}}
 -- id as the tie-break so paging is stable: without it two cases on the same
 -- score could swap places between two pages and one of them would never be
@@ -276,6 +299,7 @@ interface HitRow {
   matched_document: number
   matched_case: number
   matched_party: number
+  matched_movement: number
   score: number
   total: number
 }
@@ -684,6 +708,7 @@ function toHit(r: HitRow): SearchHit {
   if (r.matched_case) matchedIn.push('case')
   if (r.matched_party) matchedIn.push('party')
   if (r.matched_document) matchedIn.push('document')
+  if (r.matched_movement) matchedIn.push('movement')
 
   return {
     idProcessoTrf: r.id_processo_trf,

@@ -89,6 +89,22 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
   ${TOKENIZER}
 );
 
+-- The procedural timeline. It is the case's own account of itself
+-- ("Conclusos para julgamento", "Remetidos os Autos") and leaving it out did
+-- not make the search narrower, it made it wrong: a phrase present in
+-- thousands of rows answered "nothing found", which a reader takes to mean
+-- "not in the acervo" rather than "not in the three tables we indexed".
+--
+-- Only the description is indexed. The timestamp is a date, and dates are
+-- what the filters are for; putting one in a text index only lets a stray
+-- number match a year.
+CREATE VIRTUAL TABLE movements_fts USING fts5(
+  description,
+  content = 'movements',
+  content_rowid = 'id',
+  ${TOKENIZER}
+);
+
 -- Sync is done by triggers rather than from the repository functions.
 --
 -- An external-content FTS5 index is only correct if every base-table write
@@ -127,6 +143,17 @@ CREATE TRIGGER parties_au AFTER UPDATE ON parties BEGIN
   INSERT INTO parties_fts(rowid, name, role, oab) VALUES (new.id, new.name, new.role, new.oab);
 END;
 
+CREATE TRIGGER movements_ai AFTER INSERT ON movements BEGIN
+  INSERT INTO movements_fts(rowid, description) VALUES (new.id, new.description);
+END;
+CREATE TRIGGER movements_ad AFTER DELETE ON movements BEGIN
+  INSERT INTO movements_fts(movements_fts, rowid, description) VALUES ('delete', old.id, old.description);
+END;
+CREATE TRIGGER movements_au AFTER UPDATE ON movements BEGIN
+  INSERT INTO movements_fts(movements_fts, rowid, description) VALUES ('delete', old.id, old.description);
+  INSERT INTO movements_fts(rowid, description) VALUES (new.id, new.description);
+END;
+
 CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN
   INSERT INTO documents_fts(rowid, label, text_content) VALUES (new.id_processo_documento, new.label, new.text_content);
 END;
@@ -141,7 +168,7 @@ CREATE TRIGGER documents_au AFTER UPDATE ON documents BEGIN
 END;
 `
 
-const FTS_TABLES = ['cases_fts', 'parties_fts', 'documents_fts'] as const
+const FTS_TABLES = ['cases_fts', 'parties_fts', 'documents_fts', 'movements_fts'] as const
 
 function tableExists(db: Db, name: string): boolean {
   const row = db.prepare(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?`)
@@ -175,7 +202,7 @@ export function ensureSearchIndex(db: Db): void {
   // build the whole set in one transaction instead.
   const rebuild = db.transaction(() => {
     for (const t of FTS_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`)
-    for (const t of ['cases', 'parties', 'documents']) {
+    for (const t of ['cases', 'parties', 'documents', 'movements']) {
       for (const suffix of ['ai', 'ad', 'au']) db.exec(`DROP TRIGGER IF EXISTS ${t}_${suffix}`)
     }
     db.exec(SEARCH_SCHEMA)

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  openDatabase, upsertCase, upsertDocument, replacePartiesForCase,
+  openDatabase, upsertCase, upsertDocument, replacePartiesForCase, replaceMovementsForCase,
   searchAcervo, searchCases, listCaseClasses, listOabStates,
   SearchQueryError, SearchFilterError,
 } from '../src/index.ts'
@@ -291,5 +291,58 @@ describe('filtering by judging panel', () => {
     const text = searchAcervo(db, { text: 'gab', filters: {} }).total
     const both = searchAcervo(db, { text: 'gab', filters: { organ: 'RUBENS' } }).total
     expect(both).toBeLessThanOrEqual(text)
+  })
+})
+
+describe('searching the procedural timeline', () => {
+  /**
+   * The movements are the case's own account of itself — "Conclusos para
+   * julgamento", "Remetidos os Autos". Leaving them out of the index made the
+   * search quietly wrong rather than merely narrow: a phrase that appears in
+   * thousands of rows answered "nothing found", which reads as "not in the
+   * acervo" when the truth was "not in the three tables we happened to index".
+   */
+  it('finds a case by a phrase that exists only in its timeline', () => {
+    replaceMovementsForCase(db, caseC.idProcessoTrf, [
+      { position: 1, timestamp: '01/08/2026 10:00:00', description: 'Recebido pelo Distribuidor' },
+      { position: 2, timestamp: '02/08/2026 10:00:00', description: 'Redistribuído por Competência exclusiva' },
+    ])
+
+    const found = searchAcervo(db, { text: 'distribuidor', filters: {} })
+    expect(found.total).toBe(1)
+    expect(found.hits[0]!.idProcessoTrf).toBe(caseC.idProcessoTrf)
+    expect(found.hits[0]!.matchedIn).toContain('movement')
+  })
+
+  it('ignores accents there too', () => {
+    replaceMovementsForCase(db, caseC.idProcessoTrf, [
+      { position: 1, timestamp: '01/08/2026 10:00:00', description: 'Redistribuído por Competência' },
+    ])
+    expect(searchAcervo(db, { text: 'redistribuido competencia', filters: {} }).total).toBe(1)
+  })
+
+  it('counts a case once however many of its movements match', () => {
+    replaceMovementsForCase(db, caseC.idProcessoTrf, Array.from({ length: 12 }, (_, i) => ({
+      position: i + 1,
+      timestamp: '01/08/2026 10:00:00',
+      description: 'Conclusos para julgamento',
+    })))
+    const found = searchAcervo(db, { text: '"conclusos para julgamento"', filters: {} })
+    expect(found.total).toBe(1)
+    expect(found.hits).toHaveLength(1)
+  })
+
+  it('drops a case out of the index when its timeline is replaced', () => {
+    replaceMovementsForCase(db, caseC.idProcessoTrf, [
+      { position: 1, timestamp: '01/08/2026 10:00:00', description: 'Baixa Definitiva' },
+    ])
+    expect(searchAcervo(db, { text: 'baixa', filters: {} }).total).toBe(1)
+
+    // A recapture rewrites the whole timeline; the index has to follow it down
+    // as well as up, or a stale term keeps answering for a row that is gone.
+    replaceMovementsForCase(db, caseC.idProcessoTrf, [
+      { position: 1, timestamp: '01/08/2026 10:00:00', description: 'Conclusos para decisão' },
+    ])
+    expect(searchAcervo(db, { text: 'baixa', filters: {} }).total).toBe(0)
   })
 })
