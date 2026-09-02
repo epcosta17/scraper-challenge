@@ -138,14 +138,6 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       }
     }
 
-    if (args.command === 'case') {
-      console.error(
-        `Command "${args.command}" is a phase-2 feature and is not implemented yet. ` +
-        "Use 'search' to find a case, or 'crawl' to enumerate cases and download summary PDFs.",
-      )
-      return 2
-    }
-
     const reporter = createReporter({ level: logLevelOf(args), tagFor: tagForCommand(args) })
     const client = new HttpClient({
       rps: args.rps,
@@ -181,7 +173,8 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       return 0
     }
 
-    if (args.command === 'deep') {
+    // `case` is `deep` narrowed to one target — see `validateCommandUsage`.
+    if (args.command === 'deep' || args.command === 'case') {
       // validateCommandUsage already guaranteed exactly one form: a single
       // positional, or a full --from-id/--to-id range.
       const isRange = args.fromId !== undefined && args.toId !== undefined

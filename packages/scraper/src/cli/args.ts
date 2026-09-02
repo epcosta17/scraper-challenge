@@ -227,6 +227,24 @@ export function validateCommandUsage(args: ParsedArgs): void {
     }
   }
 
+  if (args.command === 'case') {
+    // `case` is `deep` with exactly one target: the same capture, named the
+    // way somebody who wants one case would reach for it. It refuses a range
+    // rather than quietly accepting one, because a command whose whole point
+    // is "this case" should not run over twenty.
+    if (args.fromId !== undefined || args.toId !== undefined) {
+      throw new ArgsError(
+        "'case' takes one case, not a range — use `deep --from-id … --to-id …` for that.",
+      )
+    }
+    if (args.positional.length !== 1) {
+      throw new ArgsError(
+        "'case' takes exactly one case number or internal id " +
+        '(e.g. `case 0013201-41.2025.4.05.8202`).',
+      )
+    }
+  }
+
   if (args.command === 'deep') {
     const hasRange = args.fromId !== undefined || args.toId !== undefined
     const hasFullRange = args.fromId !== undefined && args.toId !== undefined
@@ -266,7 +284,8 @@ USAGE
 COMMANDS
   search   Query the portal's own search form (faithful to the website)
   crawl    Enumerate cases by internal id and download summary PDFs
-  case     Fetch a single case by number or internal id (phase 2, not yet implemented)
+  case     Capture one case by number or internal id — 'deep' with a single
+           target, and it refuses a range
   deep     Fetch a case (by number or internal id, or a --from-id/--to-id range)
            and download every document in its file, PDFs and HTML alike
   daily    Advance the watermark: scrape only cases newer than the last run

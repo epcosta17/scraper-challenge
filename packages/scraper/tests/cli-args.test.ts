@@ -227,3 +227,29 @@ describe('log level — --quiet, the default, and --verbose', () => {
     expect(helpText()).toContain('--quiet')
   })
 })
+
+describe("the 'case' command", () => {
+  /**
+   * It used to print "phase 2, not yet implemented" and exit 2, which by then
+   * was simply untrue: `deep <target>` had been doing the work for a while.
+   * A command that tells the reader a lie about the tool is worse than one
+   * that is missing.
+   */
+  it('takes exactly one case', () => {
+    const args = parseArgs(['case', '0013201-41.2025.4.05.8202'])
+    expect(args.command).toBe('case')
+    expect(() => validateCommandUsage(args)).not.toThrow()
+  })
+
+  it('refuses a range, which is what deep is for', () => {
+    // Not quietly accepted: a command whose whole point is "this case" should
+    // not run over twenty of them.
+    expect(() => validateCommandUsage(parseArgs(['case', '--from-id', '1', '--to-id', '9'])))
+      .toThrow(/not a range/)
+  })
+
+  it('refuses no target and refuses two', () => {
+    expect(() => validateCommandUsage(parseArgs(['case']))).toThrow(/exactly one/)
+    expect(() => validateCommandUsage(parseArgs(['case', '130100', '130101']))).toThrow(/exactly one/)
+  })
+})
