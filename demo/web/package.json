@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@astrojs/node": "^11.1.5",
+    "@google/genai": "^2.21.0",
     "@pje/core": "*",
     "@pje/scraper": "*",
     "astro": "^7.2.10",

@@ -13,6 +13,12 @@ import { dirname, isAbsolute, join, parse, resolve } from 'node:path'
 export interface WebDataConfig {
   databasePath: string
   blobRoot: string
+  /**
+   * Where the chat keeps its conversations — a file of its own, beside the
+   * acervo but never inside it. The scraper's schema describes the court; the
+   * demo's chat is not the court's business.
+   */
+  chatDatabasePath: string
 }
 
 /**
@@ -60,5 +66,6 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WebDataConfig 
   return {
     databasePath: fromEnv(env.PJE_DB, 'data/pje.db', root),
     blobRoot: fromEnv(env.PJE_PDFS, 'data/pdfs', root),
+    chatDatabasePath: fromEnv(env.PJE_CHAT_DB, 'data/chat.db', root),
   }
 }

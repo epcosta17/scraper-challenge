@@ -2,6 +2,7 @@ import { readConfig } from './config.ts'
 import { createSqliteDataSource } from './sqlite/source.ts'
 import { createRunner } from './runner.ts'
 import { createPortalSearch } from './portal.ts'
+import { openChatStore } from './chat-store.ts'
 import type { WebDataSource } from './source.ts'
 
 const config = readConfig()
@@ -36,6 +37,18 @@ export const runner = createRunner(config)
  * court holds. A page that confuses the two would be lying about one of them.
  */
 export const portal = createPortalSearch()
+
+/**
+ * The chat's own store, in its own file.
+ *
+ * Separate from `data` on purpose, and not merely for tidiness: the acervo is
+ * the scraper's output and the conversations are the demo's, and a
+ * `conversations` table inside `packages/core`'s schema would put a demo
+ * concern into the challenge's deliverable. It holds questions, answers and
+ * the reasoning trace behind each answer — never the Gemini key, which stays
+ * in the browser.
+ */
+export const chat = openChatStore(config.chatDatabasePath)
 
 export type { WebDataSource, DocumentFile } from './source.ts'
 export * from './types.ts'

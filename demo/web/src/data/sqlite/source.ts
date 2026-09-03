@@ -18,8 +18,11 @@ import {
   listCaseClasses,
   listCaseOrgans,
   listCasesPage,
+  listCasesByLastMovement,
+  sampleDocuments,
   listFailures,
   listJobs,
+  getJob,
   listOabStates,
   openDatabase,
   searchAcervo,
@@ -42,6 +45,8 @@ import type {
   CaseDocument,
   CasePage,
   CaseSummary,
+  DocumentSample,
+  DocumentText,
   ChatMessage,
   ChatSource,
   ClassOption,
@@ -170,16 +175,36 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       // one per case and would otherwise pay a round trip per row.
       const newest = newestPerCase(getMovementsForCases(conn.db, rows.map((r) => r.idProcessoTrf)))
 
-      const items: CaseSummary[] = rows.map((row) => ({
-        number: row.number,
-        className: row.className,
-        organ: row.court,
-        parties: coverageFor(row.partyCount, declared.parties.get(row.idProcessoTrf)),
-        documents: { captured: row.documentCount, declared: null },
-        lastMovement: toMovement(newest.get(row.idProcessoTrf)),
-      }))
+      const items = toSummaries(rows, declared, newest)
 
       return { items, total, page: safePage, pageSize: size, pageCount }
+    },
+
+    async recentlyMoved(limit: number): Promise<CaseSummary[]> {
+      const conn = connect()
+      if (conn === null) return []
+      const rows = listCasesByLastMovement(conn.db, Math.min(50, Math.max(1, limit)))
+      return toSummaries(
+        rows,
+        declaredTotals(conn.db),
+        newestPerCase(getMovementsForCases(conn.db, rows.map((r) => r.idProcessoTrf))),
+      )
+    },
+
+    async sampleDocuments(limit: number, order: 'random' | 'recent'): Promise<DocumentSample[]> {
+      const conn = connect()
+      if (conn === null) return []
+      const rows = sampleDocuments(conn.db, Math.min(25, Math.max(1, limit)), order)
+      return rows.map((d) => ({
+        id: d.idProcessoDocumento,
+        label: d.label ?? 'Sin título',
+        docDate: d.docDate,
+        // Derived, not stored: a document is a PDF if we saved a file for it,
+        // and text if we saved its markup.
+        format: d.pdfKey !== null ? 'pdf' : d.textContent !== null ? 'texto' : null,
+        caseNumber: d.caseNumber,
+        className: d.className,
+      }))
     },
 
     async casesByNumber(numbers: readonly string[]): Promise<Map<string, HeldCase>> {
@@ -293,6 +318,12 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       }
 
       return { queued, skipped, error: null }
+    },
+
+    async caseNumberById(idProcessoTrf: number): Promise<string | null> {
+      const conn = connect()
+      if (conn === null || !Number.isInteger(idProcessoTrf)) return null
+      return getCaseById(conn.db, idProcessoTrf)?.number ?? null
     },
 
     async getCase(number: string): Promise<CaseDetail | null> {
@@ -455,6 +486,13 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       }
     },
 
+    async job(id: number): Promise<Job | null> {
+      const conn = connect()
+      if (conn === null || !Number.isInteger(id)) return null
+      const row = getJob(conn.db, id)
+      return row === null ? null : toJob(row)
+    },
+
     async captureOverview(): Promise<CaptureOverview> {
       const conn = connect()
       if (conn === null) {
@@ -500,6 +538,38 @@ export function createSqliteDataSource(config: WebDataConfig): WebDataSource {
       const parsed = parseTarget(kind, target)
       if (!parsed.ok) return { ok: false, error: parsed.error }
       return { ok: true, job: toJob(enqueueJob(conn.db, kind, parsed.payload)) }
+    },
+
+    async documentText(id: number): Promise<DocumentText | null> {
+      const conn = connect()
+      if (conn === null || !Number.isInteger(id)) return null
+      const doc = getDocumentById(conn.db, id)
+      if (doc === null || doc.textContent === null) return null
+      return {
+        id,
+        label: doc.label ?? 'Sin título',
+        docDate: doc.docDate,
+        caseNumber: getCaseById(conn.db, doc.idProcessoTrf)?.number ?? String(doc.idProcessoTrf),
+        text: doc.textContent,
+      }
+    },
+
+    async documentCases(ids: number[]): Promise<Map<number, string>> {
+      const conn = connect()
+      const out = new Map<number, string>()
+      if (conn === null || ids.length === 0) return out
+      // One query, and the case numbers come from the join rather than a lookup
+      // per id: an answer can cite a dozen documents.
+      const wanted = ids.filter((id) => Number.isInteger(id)).slice(0, 60)
+      if (wanted.length === 0) return out
+      const rows = conn.db.prepare(`
+        SELECT d.id_processo_documento AS id, c.number AS number
+        FROM documents d
+        JOIN cases c ON c.id_processo_trf = d.id_processo_trf
+        WHERE d.id_processo_documento IN (${wanted.map(() => '?').join(',')})
+      `).all(...wanted) as Array<{ id: number; number: string }>
+      for (const r of rows) out.set(r.id, r.number)
+      return out
     },
 
     async openDocument(id: number): Promise<DocumentFile | null> {
@@ -616,6 +686,26 @@ function filterErrorText(err: SearchFilterError): string {
 }
 
 // ── Coverage ────────────────────────────────────────────────────────────────
+
+/**
+ * The listing row every case screen shows, from a repository row.
+ *
+ * Shared by the two orderings — by capture and by last movement — so a column
+ * added to one listing cannot quietly go missing from the other.
+ */
+const toSummaries = (
+  rows: AcervoCaseRow[],
+  declared: ReturnType<typeof declaredTotals>,
+  newest: Map<number, StoredMovement>,
+): CaseSummary[] =>
+  rows.map((row) => ({
+    number: row.number,
+    className: row.className,
+    organ: row.court,
+    parties: coverageFor(row.partyCount, declared.parties.get(row.idProcessoTrf)),
+    documents: { captured: row.documentCount, declared: null },
+    lastMovement: toMovement(newest.get(row.idProcessoTrf)),
+  }))
 
 const coverageFor = (captured: number, declared: number | null | undefined): Coverage => ({
   captured,

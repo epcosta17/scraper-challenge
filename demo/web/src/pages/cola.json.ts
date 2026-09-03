@@ -24,7 +24,13 @@ export const GET: APIRoute = async () => {
       // false, so a finished queue costs nothing to sit in front of.
       active: worker.running || overview.jobs.some((j) => j.state === 'running' || j.state === 'queued'),
       worker: {
-        running: worker.running,
+        // A job in flight means *a* worker is draining the queue, whether or
+        // not this server is the one that started it. In the container the
+        // worker is a sibling process and never ours, so reporting only what
+        // we spawned had the screen saying "Sin worker" over a queue that was
+        // visibly moving.
+        running: worker.running || overview.jobs.some((j) => j.state === 'running'),
+        ours: worker.running,
         startedAt: worker.startedAt,
         lastExit: worker.lastExit,
       },

@@ -1,164 +1,1166 @@
 ---
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
+import HelpTip from '../components/HelpTip.astro'
+import Select from '../components/Select.astro'
 import { data } from '../data/index.ts'
-import { formatInt, plural } from '../lib/format.ts'
+import { formatInt } from '../lib/format.ts'
 
 /**
- * The same full-text index as `/busqueda`, asked in prose.
+ * The agent.
  *
- * There is no language model behind this screen and the answer never pretends
- * otherwise: every sentence it prints is a count over the rows that matched,
- * and the passages on the right are the captured text itself, cut by FTS5
- * around the terms of the question.
+ * Nothing is answered on the server: this page renders an empty thread and a
+ * gear, and the conversation happens in the browser against `/agente.json`,
+ * which streams the model's reasoning, its tool calls and the answer as they
+ * happen. A question that reaches the court takes ten seconds or more, and a
+ * page that showed nothing until it was over could not be told apart from one
+ * that had hung.
+ *
+ * The API key lives in the browser's `localStorage` and travels with each
+ * question. It is never written to SQLite, never logged, and never leaves the
+ * server except to Gemini.
  */
-const question = (Astro.url.searchParams.get('q') ?? '').trim()
-const conversation = await data.conversation(question === '' ? null : question)
+const stats = await data.archiveStats()
+const scope = stats.caseCount === 0
+  ? 'Sin acervo que consultar todavía'
+  : `Sobre ${formatInt(stats.caseCount)} expedientes y ${formatInt(stats.documentCount)} documentos del TRF5`
+
+/** What it can do, shown once on an empty thread rather than explained in prose. */
+/** How long the model may think. The gear writes this; -1 lets it decide. */
+const BUDGETS = [
+  { value: '-1', label: 'Automático — el modelo decide' },
+  { value: '0', label: 'Apagado — más rápido y más barato' },
+  { value: '1024', label: 'Corto — 1.024 tokens' },
+  { value: '8192', label: 'Largo — 8.192 tokens' },
+]
+
+const CAN = [
+  ['Buscar en el acervo', 'texto completo sobre expedientes, partes, movimientos y documentos'],
+  ['Listar expedientes', 'los más recientes, por movimiento en el tribunal o por captura'],
+  ['Listar documentos', 'al azar o los últimos, de todo el acervo'],
+  ['Leer un expediente', 'partes, línea temporal completa y documentos'],
+  ['Leer un documento', 'su texto íntegro, para citarlo con exactitud'],
+  ['Contar', 'por clase judicial o por órgano juzgador'],
+  ['Consultar el portal', 'en vivo, cuando el acervo no lo tenga'],
+  ['Encolar una captura', 'y traer lo que falte'],
+]
 ---
 
 <Base
-  title="Chat"
-  current="chat"
-  description="Preguntas en lenguaje natural sobre el acervo, respondidas con citas a los documentos."
+  title="Agente"
+  current="agente"
+  description="Un agente sobre el acervo: busca, lee, cuenta, consulta el portal y encola capturas."
+  fixed
 >
-  <div class="split" style="--aside: 460px">
+  <div class="split" style="--aside: 380px">
     <div class="split__main talk">
       <div class="thread">
         <header class="thread__head">
           <p class="eyebrow eyebrow--sm">05 — CONSULTA</p>
-          <p class="thread__scope">{conversation.scope}</p>
+          <div class="thread__line">
+            <p class="thread__scope">{scope}</p>
+            {/*
+              What the agent can reach, as reference rather than as a wall.
+              It was a block under the thread, which put a list of capabilities
+              between the reader and the answer they had just asked for — and
+              read as instructions for a screen that needs none.
+            */}
+            <HelpTip label="Qué puede hacer" align="right" width={460}>
+              <dl class="can">
+                {CAN.map(([what, how]) => (
+                  <div class="can__row">
+                    <dt>{what}</dt>
+                    <dd>{how}</dd>
+                  </div>
+                ))}
+              </dl>
+            </HelpTip>
+          </div>
         </header>
 
-        {
-          conversation.messages.map((m) => (
-            <article class="turn">
-              <p class="turn__role" class:list={['turn__role', m.role === 'assistant' && 'turn__role--bot']}>
-                {m.role === 'user' ? 'TÚ' : 'MAGNAR'}
-              </p>
-              <div class="turn__body">
-                {m.paragraphs.map((p) => (
-                  <p class={m.role === 'user' ? 'turn__question' : 'turn__answer'}>{p}</p>
-                ))}
+        {/* Filled by the browser. Empty markup so nothing is claimed before it is known. */}
+        <div class="turns" id="turns"></div>
 
-                {
-                  m.citations.length > 0 && (
-                    <p class="cites">
-                      <span class="cites__label">Fundamentado en</span>
-                      {m.citations.map((c) => (
-                        <span class="chip mono">{c}</span>
-                      ))}
-                      {m.extraCitations > 0 && <span class="chip mono">+{m.extraCitations}</span>}
-                    </p>
-                  )
-                }
-              </div>
-            </article>
-          ))
-        }
+        <div class="intro" id="intro">
+          <p class="intro__lead">
+            Pregunta en tu idioma. El agente decide qué mirar y te enseña cada paso.
+          </p>
+          <p class="intro__note" id="intro-note" hidden>
+            Falta la clave de Gemini. Ponla en el engranaje de arriba a la derecha.
+          </p>
+        </div>
       </div>
 
-      <form class="compose" method="get" action="/chat">
+      <form class="compose" id="ask">
         <div class="compose__field">
           <input
             class="compose__input"
-            type="text"
+            id="question"
             name="q"
-            value={question}
-            placeholder="Pregunta sobre el acervo…"
-            aria-label="Pregunta sobre el acervo"
+            autocomplete="off"
+            placeholder="¿Qué quieres saber del acervo?"
+            aria-label="Tu pregunta"
           />
-          <button class="btn btn--send" type="submit" aria-label="Enviar pregunta">
-            <Icon name="arrow-up" size={14} />
+          <button class="btn btn--send" type="submit" id="send" aria-label="Enviar pregunta">
+            <Icon name="send" size={15} />
           </button>
         </div>
-        <p class="compose__note">
-          Las respuestas citan documentos del acervo, y solo del acervo. El criterio y la aprobación
-          siguen siendo tuyos.
+        <p class="compose__note" id="note">
+          Las citas se enlazan solo si el expediente existe de verdad en el acervo.
         </p>
       </form>
     </div>
 
-    <aside class="split__aside sources">
+    <aside class="split__aside settings">
       <header class="section-head">
-        <h2 class="section-head__title">FUENTES CITADAS</h2>
-        <p class="section-head__aside">{plural(conversation.sourceCount, 'expediente', 'expedientes')}</p>
+        <h2 class="section-head__title">GEMINI</h2>
+        <button class="gear" type="button" id="gear" aria-label="Ajustes del modelo" aria-expanded="false">
+          <Icon name="settings" size={15} />
+        </button>
       </header>
 
-      {
-        conversation.sources.length === 0 && (
-          <p class="sources__foot">
-            Las fuentes aparecen aquí en cuanto haya una pregunta: son los expedientes cuyo texto
-            contiene los términos que escribas.
-          </p>
-        )
-      }
+      <div class="panel" id="panel" hidden>
+        <label class="field">
+          <span class="field-label">CLAVE DE API</span>
+          <input class="input" id="key" type="password" autocomplete="off" placeholder="AIza…" />
+          <span class="hint">
+            Se guarda en este navegador y viaja con cada pregunta. No se escribe en la base ni
+            en ningún registro. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Consíguela aquí</a>.
+          </span>
+        </label>
 
-      {
-        conversation.sources.map((s) => (
-          <a class="source" href={`/expedientes/${s.number}`}>
-            <span class="source__top">
-              <span class="mono source__num">{s.number}</span>
-              <Icon name="arrow-up-right" size={14} />
-            </span>
-            <span class="source__class">{s.className}</span>
-            <span class="source__frag">{s.fragment}</span>
-          </a>
-        ))
-      }
+        <label class="field">
+          <span class="field-label">MODELO</span>
+          <input class="input input--mono" id="model" value="gemini-2.5-flash" autocomplete="off" />
+          <span class="hint">Flash es rápido y barato; Pro razona mejor y cuesta más.</span>
+        </label>
 
-      {
-        conversation.sourceCount > conversation.sources.length && (
-          <p class="sources__foot">
-            {formatInt(conversation.sourceCount - conversation.sources.length)}{' '}
-            {conversation.sourceCount - conversation.sources.length === 1
-              ? 'expediente más coincide'
-              : 'expedientes más coinciden'} con la pregunta.
-          </p>
-        )
-      }
+        <div class="field">
+          <span class="field-label">RAZONAMIENTO</span>
+          {/*
+            Ours, not the browser's. A native <select> opens the operating
+            system's own popup — dark, with its own highlight colour — in the
+            middle of a light interface it knows nothing about. The same
+            control the search screen uses.
+          */}
+          <Select
+            name="budget"
+            placeholder="Automático — el modelo decide"
+            value="-1"
+            options={BUDGETS}
+          />
+          <span class="hint">
+            Lo que se ve en «razonamiento» es el resumen que devuelve la API, no la cadena
+            literal del modelo: Google no la expone.
+          </span>
+        </div>
+
+        <p class="panel__state" id="state"></p>
+      </div>
+
+      <p class="settings__idle" id="settings-idle">
+        Sin clave. Ábrelo en el engranaje para empezar.
+      </p>
+
+      <section class="convos">
+        <header class="section-head section-head--tight">
+          <h2 class="section-head__title">CONVERSACIONES</h2>
+          <button class="btn btn--ghost btn--sm" type="button" id="new-convo">Nueva</button>
+        </header>
+        {/* Filled by the browser: the list lives in the demo's own database. */}
+        <ul class="convos__list" id="convos"></ul>
+        <p class="convos__empty" id="convos-empty">
+          Todavía no hay ninguna. La primera pregunta abre una.
+        </p>
+      </section>
     </aside>
   </div>
 </Base>
 
+<script>
+  import { renderAnswer, referencedIn } from '../agent/render.ts'
+
+  /**
+   * The conversation, run in the browser.
+   *
+   * The key never leaves `localStorage` except to travel with a question, and
+   * the thread is rebuilt from events as they arrive: reasoning summaries and
+   * tool calls into the collapsible trace, the answer a word at a time under
+   * it. Nothing here waits for the turn to finish before showing anything —
+   * a question that reaches the court takes ten seconds or more.
+   */
+  const KEY = 'pje.gemini.key'
+  const MODEL = 'pje.gemini.model'
+  const BUDGET = 'pje.gemini.budget'
+
+  const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
+
+  const turns = $('turns')
+  const intro = $('intro')
+  const introNote = $('intro-note')
+  const form = $<HTMLFormElement>('ask')
+  const input = $<HTMLInputElement>('question')
+  const send = $<HTMLButtonElement>('send')
+  const gear = $<HTMLButtonElement>('gear')
+  const panel = $('panel')
+  const idle = $('settings-idle')
+  const keyInput = $<HTMLInputElement>('key')
+  const modelInput = $<HTMLInputElement>('model')
+  // The custom select keeps its value in a hidden input, which is what the
+  // form would submit and what this reads.
+  const budgetInput = document.querySelector<HTMLInputElement>('input[name="budget"]')!
+  const state = $('state')
+
+  const read = (k: string, fallback = ''): string => {
+    try { return localStorage.getItem(k) ?? fallback } catch { return fallback }
+  }
+  const write = (k: string, v: string): void => {
+    try { localStorage.setItem(k, v) } catch { /* private window; the session still works */ }
+  }
+
+  keyInput.value = read(KEY)
+  modelInput.value = read(MODEL, 'gemini-2.5-flash')
+  // Restoring the saved choice has to move the label too: the hidden input is
+  // the state, but the button is what the reader sees.
+  budgetInput.value = read(BUDGET, '-1')
+  {
+    const chosen = budgetInput.closest('[data-sel]')
+      ?.querySelector<HTMLElement>(`.sel__option[data-value="${budgetInput.value}"]`)
+    const label = budgetInput.closest('[data-sel]')?.querySelector<HTMLElement>('[data-sel-label]')
+    const text = chosen?.querySelector('span')?.textContent ?? chosen?.textContent
+    if (label && text) label.textContent = text.trim()
+  }
+
+  const reflectKey = (): void => {
+    const has = keyInput.value.trim() !== ''
+    idle.textContent = has ? 'Clave guardada en este navegador.' : 'Sin clave. Ábrelo en el engranaje para empezar.'
+    introNote.hidden = has
+  }
+  reflectKey()
+
+  gear.addEventListener('click', () => {
+    panel.hidden = !panel.hidden
+    gear.setAttribute('aria-expanded', String(!panel.hidden))
+    idle.hidden = !panel.hidden
+  })
+
+  for (const [el, k] of [[keyInput, KEY], [modelInput, MODEL], [budgetInput, BUDGET]] as const) {
+    el.addEventListener('change', () => {
+      write(k, el.value.trim())
+      state.textContent = 'Guardado.'
+      reflectKey()
+      setTimeout(() => { state.textContent = '' }, 1600)
+    })
+  }
+
+  /** Everything said so far, so the model can follow a thread. */
+  let history: Array<{ role: 'user' | 'model'; text: string }> = []
+
+  /**
+   * The conversation being written to, or null before the first question.
+   *
+   * Opened lazily: a visitor who loads the page and leaves should not leave an
+   * empty conversation behind in the list.
+   */
+  let conversationId: number | null = null
+
+  const thread = document.querySelector('.thread') as HTMLElement
+
+  /**
+   * Keeps the newest line in view, but only if the reader was already there.
+   *
+   * An answer arrives over several seconds, and scrolling on every chunk means
+   * somebody who scrolled up to re-read an earlier turn gets yanked back down
+   * mid-sentence. The 80px of slack is for the case where they are a line or
+   * two off the bottom and clearly still following.
+   *
+   * When the thread is not its own scroller — narrow screens, where the window
+   * scrolls instead — there is nothing to set, and the element is asked to
+   * bring itself into view the old way.
+   */
+  const scrolls = (): boolean => thread.scrollHeight > thread.clientHeight + 1
+
+  const following = (): boolean =>
+    !scrolls() || thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80
+
+  function follow(node: HTMLElement, smooth = false): void {
+    if (!scrolls()) {
+      node.scrollIntoView({ block: 'end', behavior: smooth ? 'smooth' : 'auto' })
+      return
+    }
+    thread.scrollTo({ top: thread.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+  }
+
+  const convos = document.getElementById('convos') as HTMLUListElement
+  const convosEmpty = document.getElementById('convos-empty') as HTMLElement
+  const newConvo = document.getElementById('new-convo') as HTMLButtonElement
+
+  const el = (tag: string, cls?: string, text?: string): HTMLElement => {
+    const node = document.createElement(tag)
+    if (cls) node.className = cls
+    if (text !== undefined) node.textContent = text
+    return node
+  }
+
+  /** Reads like the tool call it was: `buscar_en_el_acervo("demora perícia")`. */
+  /**
+   * The little markdown a thought summary carries, and no more.
+   *
+   * They arrive as `**A heading**` followed by a paragraph, which was showing
+   * on screen with the asterisks still in it. Escaped first: a summary that
+   * quotes a case's HTML must not be able to inject anything.
+   */
+  const renderThought = (raw: string): string =>
+    raw
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .split(/\n{2,}/)
+      .filter((block) => block.trim() !== '')
+      .map((block) => `<p>${block
+        .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\n/g, ' ')}</p>`)
+      .join('')
+
+  const callLine = (name: string, args: Record<string, unknown>): string => {
+    const shown = Object.values(args)
+      .filter((v) => v !== '' && v !== undefined && v !== null)
+      .map((v) => (typeof v === 'string' ? `"${v}"` : String(v)))
+      .join(', ')
+    return `${name}(${shown})`
+  }
+
+  /** One asked question, in the two-column shape the design draws. */
+  function userTurn(question: string): HTMLElement {
+    const node = el('article', 'turn turn--user')
+    const body = el('div', 'turn__body')
+    body.append(el('p', 'turn__question', question))
+    node.append(el('p', 'turn__role', 'Tú'), body)
+    return node
+  }
+
+  async function ask(question: string): Promise<void> {
+    const apiKey = keyInput.value.trim()
+    if (apiKey === '') {
+      panel.hidden = false
+      idle.hidden = true
+      keyInput.focus()
+      return
+    }
+
+    intro.hidden = true
+    send.disabled = true
+    input.value = ''
+
+    turns.append(userTurn(question))
+
+    // The role sits in the grid's first column and everything else in the
+    // second, which is what `.turn__body` is for. Without it a bot turn puts
+    // three children into two columns and the answer lands back under the
+    // role, one word per line.
+    const turn = el('article', 'turn turn--bot')
+    const body = el('div', 'turn__body')
+    turn.append(el('p', 'turn__role turn__role--bot', 'Agente'), body)
+
+    // The trace: open while it works, folded when it is done — the way the
+    // reader would leave it themselves.
+    const trace = document.createElement('details')
+    trace.className = 'trace'
+    trace.open = true
+    const summary = document.createElement('summary')
+    summary.className = 'trace__head'
+    summary.textContent = 'Razonamiento'
+    const steps = el('div', 'trace__steps')
+    trace.append(summary, steps)
+
+    const answer = el('div', 'turn__answer ans')
+    body.append(trace, answer)
+    turns.append(turn)
+    follow(turn, true)
+
+    let markdown = ''
+    let thought: HTMLElement | null = null
+    let toolCount = 0
+    const startedAt = Date.now()
+    // Kept so the turn can be stored and, later, replayed exactly: the trace is
+    // the part worth persisting, and it was the part being thrown away.
+    const traceEvents: unknown[] = []
+
+    try {
+      const response = await fetch('/agente.json', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          apiKey,
+          model: modelInput.value.trim(),
+          thinkingBudget: Number(budgetInput.value),
+          question,
+          history,
+        }),
+      })
+
+      if (!response.ok || response.body === null) {
+        const detail = await response.json().catch(() => null)
+        throw new Error(detail?.message ?? `El servidor respondió ${response.status}.`)
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        // One JSON object per line; the last piece may be half a line.
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (line.trim() === '') continue
+          let event: any
+          try { event = JSON.parse(line) } catch { continue }
+          traceEvents.push(event)
+          // Measured before the DOM grows, or the new content is already past
+          // the bottom and it never looks like they were following.
+          const wasFollowing = following()
+
+          if (event.type === 'thought') {
+            // Appended to the open block rather than starting a new one per
+            // chunk, or a single thought arrives as confetti. Re-rendered from
+            // the accumulated raw text each time: the summaries come back as
+            // "**A heading**" plus a paragraph, and a bold marker can be split
+            // across two chunks.
+            if (thought === null) { thought = el('div', 'trace__thought'); steps.append(thought) }
+            thought.dataset.raw = (thought.dataset.raw ?? '') + event.text
+            thought.innerHTML = renderThought(thought.dataset.raw)
+          } else if (event.type === 'tool') {
+            thought = null
+            toolCount++
+            const row = el('p', 'trace__tool')
+            row.append(el('span', 'trace__gear', '⚙'), el('span', 'mono', callLine(event.name, event.args)))
+            row.append(el('span', 'trace__pending', ' …'))
+            steps.append(row)
+          } else if (event.type === 'tool_result') {
+            const rows = steps.querySelectorAll('.trace__tool')
+            const row = rows[rows.length - 1]
+            row?.querySelector('.trace__pending')?.remove()
+            const out = el('span', event.error ? 'trace__bad' : 'trace__out',
+              ` → ${event.summary} · ${(event.ms / 1000).toFixed(1)}s`)
+            row?.append(out)
+          } else if (event.type === 'answer') {
+            markdown += event.text
+            // Re-rendered whole on each chunk: markdown is not safely
+            // incremental — a table half-arrived is not a table.
+            answer.innerHTML = renderAnswer(markdown, { cases: new Set(), documents: new Map() })
+          } else if (event.type === 'error') {
+            answer.append(el('p', 'ans__error', event.message))
+          }
+          // Only if they were following; otherwise they are reading something.
+          if (wasFollowing) follow(turn)
+        }
+      }
+
+      if (markdown !== '') {
+        // Now that the answer is whole, ask which of the things it cited
+        // actually exist — and only then let any of them become links.
+        const refs = referencedIn(markdown)
+        const known = await verify(refs)
+        answer.innerHTML = renderAnswer(markdown, known)
+        history.push({ role: 'user', text: question }, { role: 'model', text: markdown })
+        // Stored after the answer is whole, so a conversation on disk is never
+        // a question with nothing under it. The first question is what names
+        // the conversation.
+        await remember(question, markdown, traceEvents)
+      }
+    } catch (err) {
+      answer.append(el('p', 'ans__error', err instanceof Error ? err.message : String(err)))
+    } finally {
+      trace.open = false
+      const seconds = ((Date.now() - startedAt) / 1000).toFixed(1)
+      summary.textContent = toolCount === 0
+        ? `Razonamiento · ${seconds}s`
+        : `Razonamiento · ${toolCount} ${toolCount === 1 ? 'consulta' : 'consultas'} · ${seconds}s`
+      if (steps.childElementCount === 0) trace.hidden = true
+      send.disabled = false
+      input.focus()
+    }
+  }
+
+  /**
+   * Writes the finished exchange to the demo's own database.
+   *
+   * Deliberately not fatal. A conversation that could not be saved is worse
+   * than one that was, but far better than an answer the reader watched arrive
+   * and then lost to an error banner — so a failure here leaves a note in the
+   * list and the thread on screen untouched.
+   */
+  async function remember(question: string, answer: string, trace: unknown[]): Promise<void> {
+    try {
+      if (conversationId === null) {
+        const created = await post({ accion: 'crear', titulo: question })
+        conversationId = created?.conversacion?.id ?? null
+        if (conversationId === null) return
+      }
+      await post({ accion: 'anadir', id: conversationId, rol: 'user', texto: question })
+      await post({ accion: 'anadir', id: conversationId, rol: 'model', texto: answer, trazo: trace })
+      await refreshConvos()
+    } catch {
+      convosEmpty.hidden = false
+      convosEmpty.textContent = 'No se pudo guardar esta conversación.'
+    }
+  }
+
+  async function post(body: Record<string, unknown>): Promise<any> {
+    const res = await fetch('/conversaciones.json', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return res.ok ? res.json() : null
+  }
+
+  /** Redraws the list in the aside, marking the one being written to. */
+  async function refreshConvos(): Promise<void> {
+    let items: any[] = []
+    try {
+      const res = await fetch('/conversaciones.json')
+      items = (await res.json())?.conversaciones ?? []
+    } catch {
+      return
+    }
+
+    convos.replaceChildren()
+    convosEmpty.hidden = items.length > 0
+
+    for (const c of items) {
+      const row = el('li', 'convo')
+      if (c.id === conversationId) row.classList.add('convo--current')
+
+      const open = el('button', 'convo__open')
+      open.type = 'button'
+      open.append(
+        el('span', 'convo__title', c.title),
+        el('span', 'convo__meta', `${c.turns} ${c.turns === 1 ? 'turno' : 'turnos'} · ${ago(c.updatedAt)}`),
+      )
+      open.addEventListener('click', () => { void load(c.id) })
+
+      const drop = el('button', 'convo__drop', '×')
+      drop.type = 'button'
+      drop.title = 'Borrar esta conversación'
+      drop.addEventListener('click', async (event) => {
+        event.stopPropagation()
+        await post({ accion: 'borrar', id: c.id })
+        // Only the thread on screen is cleared, and only if it was this one.
+        if (c.id === conversationId) startFresh()
+        await refreshConvos()
+      })
+
+      row.append(open, drop)
+      convos.append(row)
+    }
+  }
+
+  /** Reopens a stored conversation, trace and all. */
+  async function load(id: number): Promise<void> {
+    let payload: any
+    try {
+      const res = await fetch(`/conversaciones.json?id=${id}`)
+      if (!res.ok) return
+      payload = await res.json()
+    } catch {
+      return
+    }
+
+    conversationId = id
+    history = []
+    turns.replaceChildren()
+    intro.hidden = true
+
+    for (const t of payload.turns ?? []) {
+      history.push({ role: t.role, text: t.text })
+      if (t.role === 'user') {
+        turns.append(userTurn(t.text))
+      } else {
+        turns.append(await replay(t))
+      }
+    }
+
+    await refreshConvos()
+    const last = turns.lastElementChild
+    if (last instanceof HTMLElement) follow(last)
+  }
+
+  /**
+   * Rebuilds one stored model turn: the folded trace, then the answer.
+   *
+   * The citations are re-checked rather than stored as HTML. What is in the
+   * acervo changes — a case captured after the conversation happened should
+   * link now, and one that somehow left it must stop linking. Storing the
+   * rendered markup would freeze a claim that was only true that afternoon.
+   */
+  async function replay(turn: any): Promise<HTMLElement> {
+    const node = el('article', 'turn turn--bot')
+    const body = el('div', 'turn__body')
+    node.append(el('p', 'turn__role turn__role--bot', 'Agente'), body)
+
+    const events: any[] = Array.isArray(turn.trace) ? turn.trace : []
+    const tools = events.filter((e) => e?.type === 'tool').length
+
+    if (events.length > 0) {
+      const trace = document.createElement('details')
+      trace.className = 'trace'
+      const summary = document.createElement('summary')
+      summary.className = 'trace__head'
+      summary.textContent = tools === 0
+        ? 'Razonamiento'
+        : `Razonamiento · ${tools} ${tools === 1 ? 'consulta' : 'consultas'}`
+      const steps = el('div', 'trace__steps')
+
+      let thought: HTMLElement | null = null
+      for (const event of events) {
+        if (event?.type === 'thought') {
+          if (thought === null) { thought = el('div', 'trace__thought'); steps.append(thought) }
+          thought.dataset.raw = (thought.dataset.raw ?? '') + event.text
+          thought.innerHTML = renderThought(thought.dataset.raw)
+        } else if (event?.type === 'tool') {
+          thought = null
+          const row = el('p', 'trace__tool')
+          row.append(el('span', 'trace__gear', '⚙'), el('span', 'mono', callLine(event.name, event.args ?? {})))
+          steps.append(row)
+        } else if (event?.type === 'tool_result') {
+          const last = steps.lastElementChild
+          if (last?.classList.contains('trace__tool')) {
+            last.append(el('span', event.error ? 'trace__bad' : 'trace__ok', ` ${event.summary}`))
+          }
+        }
+      }
+
+      trace.append(summary, steps)
+      if (steps.childElementCount > 0) body.append(trace)
+    }
+
+    const answer = el('div', 'turn__answer ans')
+    answer.innerHTML = renderAnswer(turn.text, await verify(referencedIn(turn.text)))
+    body.append(answer)
+    return node
+  }
+
+  /** Clears the screen for a new conversation without touching what is stored. */
+  function startFresh(): void {
+    conversationId = null
+    history = []
+    turns.replaceChildren()
+    intro.hidden = false
+    input.focus()
+  }
+
+  /** "hace 3 h", from the store's UTC `datetime('now')` stamps. */
+  function ago(stamp: string): string {
+    const then = Date.parse(`${stamp.replace(' ', 'T')}Z`)
+    if (Number.isNaN(then)) return ''
+    const mins = Math.round((Date.now() - then) / 60000)
+    if (mins < 1) return 'ahora'
+    if (mins < 60) return `hace ${mins} min`
+    const hours = Math.round(mins / 60)
+    if (hours < 24) return `hace ${hours} h`
+    return `hace ${Math.round(hours / 24)} d`
+  }
+
+  /** Asks the acervo which cited cases and documents are real. */
+  async function verify(refs: { cases: string[]; documents: number[] }) {
+    if (refs.cases.length === 0 && refs.documents.length === 0) {
+      return { cases: new Set<string>(), documents: new Map<number, string>() }
+    }
+    try {
+      const res = await fetch('/citas.json', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(refs),
+      })
+      const known = await res.json()
+      return {
+        cases: new Set<string>(known.cases ?? []),
+        documents: new Map<number, string>(
+          (known.documents ?? []).map((d: { id: number; expediente: string }) => [d.id, d.expediente]),
+        ),
+      }
+    } catch {
+      // Cannot verify: nothing gets linked. The safe direction — an
+      // unverified citation reads as text, never as a checked fact.
+      return { cases: new Set<string>(), documents: new Map<number, string>() }
+    }
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const question = input.value.trim()
+    if (question !== '') void ask(question)
+  })
+
+  newConvo.addEventListener('click', () => {
+    startFresh()
+    void refreshConvos()
+  })
+
+  // The list is drawn on load; the thread itself stays empty until somebody
+  // opens a conversation, so arriving at /agente is still arriving at a clean
+  // page rather than at the middle of last week's question.
+  void refreshConvos()
+</script>
+
 <style>
+  .section-head--tight { margin-bottom: 6px; padding-bottom: 8px; }
+
+
+  /* What it can do, shown once instead of explained. */
+  /* The empty state, and only that. Once the capability list moved into the
+     tooltip this was a single orphan line sitting under the thread; now it
+     fills the space it is the only thing in, and goes the moment there is a
+     turn to read. */
+  /* Directly under the heading it belongs to, not floating in the middle of
+     an empty screen — centred in all that space it read as something that had
+     come loose rather than as the screen's own opening line. */
+  .intro {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 2px;
+  }
+  .intro__lead {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 300;
+    color: var(--ink-3);
+    max-width: 62ch;
+  }
+  .intro__note { margin: 0; font-size: 13px; color: var(--warn); }
+  /* An author `display` beats the browser's `[hidden] { display: none }`, so
+     without this the empty state stays on screen under every answer. Bitten by
+     exactly this once already, on the failures tab. */
+  .intro[hidden] { display: none; }
+
+  /* The scope on the left, the question mark on the right of the same line. */
+  .thread__line { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+
+  /* The capability list, now inside the tooltip. */
+  .can { display: flex; flex-direction: column; gap: 9px; margin: 0; }
+  .can__row { display: flex; gap: 14px; align-items: baseline; }
+  .can__row dt { flex: none; width: 150px; font-size: 12.5px; color: var(--ink); }
+  .can__row dd { margin: 0; font-size: 12.5px; font-weight: 300; color: var(--ink-3); line-height: 1.45; }
+
+
+  /* The gear and what it opens. */
+  /* Scrolls on its own: the conversation list grows without bound, and it must
+     not drag the key field off the screen with it. */
+  .settings {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 40px var(--gutter) 40px 36px;
+  }
+  .gear {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--ink-3);
+    cursor: pointer;
+  }
+  .gear:hover { border-color: var(--line); color: var(--ink); }
+  .gear[aria-expanded='true'] { border-color: var(--line-strong); color: var(--ink); }
+  .panel { display: flex; flex-direction: column; gap: 20px; }
+  .panel[hidden] { display: none; }
+  .panel__state { margin: 0; font-size: 12px; color: var(--ok); min-height: 1em; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .settings__idle { margin: 0; font-size: 12px; color: var(--ink-3); }
+
+  /* Three bands: the heading, the conversation, and the box you type in.
+     Only the middle one scrolls, so the compose box stays put however long the
+     thread gets — it was sliding off the bottom of the window. */
   .talk {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 40px;
+    gap: 0;
+    min-height: 0;
     padding: 40px var(--gutter) 0 var(--gutter);
   }
   .split__main.talk { padding-right: 40px; }
   @media (max-width: 1080px) {
     .split__main.talk { padding-right: var(--gutter); padding-bottom: 8px; }
+    /* Stacked, the window scrolls again: a scrolling box inside a scrolling
+       page is a trap on a phone. */
+    .thread { overflow-y: visible; flex: none; }
+    .thread__head { position: static; }
   }
 
-  .thread { display: flex; flex-direction: column; gap: 34px; }
-  .thread__head { display: flex; flex-direction: column; gap: 10px; padding-bottom: 8px; }
+  .thread {
+    display: flex;
+    flex-direction: column;
+    gap: 34px;
+    /* `min-height: 0` is the whole trick: a flex child defaults to its content
+       size, and without this it grows instead of scrolling. */
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    /* Room for the answer to clear the compose box as it streams in. */
+    padding-bottom: 28px;
+    /* The scrollbar hugs the edge instead of cutting through the text. */
+    margin-right: -10px;
+    padding-right: 10px;
+    overscroll-behavior: contain;
+  }
+  .thread__head {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-bottom: 8px;
+    /* Stays put while the thread moves under it: at forty turns, knowing what
+       you are looking at matters more than eight pixels of room. */
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--paper);
+  }
   .eyebrow--sm { font-size: 11px; letter-spacing: 1.6px; }
   .thread__scope { font-size: 14px; font-weight: 300; color: var(--ink-2); }
 
-  .turn { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 18px; }
-  .turn__role {
+  .compose {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: none;
+    padding: 16px 0 28px;
+    background: var(--paper);
+  }
+  .compose__field {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 10px 10px 20px;
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+  }
+  /* One box, not two. The inner rectangle was the browser's own focus ring on
+     the input; hiding it outright would leave a keyboard user with nothing, so
+     it moves out to the field, which is what a reader thinks of as the box. */
+  .compose__field:focus-within { box-shadow: 0 0 0 1px var(--ink); }
+  .compose__input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: none;
+    background: none;
+    font-size: 15px;
+    font-weight: 300;
+    color: var(--ink);
+  }
+  .compose__input:disabled { color: var(--ink-3); -webkit-text-fill-color: var(--ink-3); }
+  .btn--send { padding: 9px 14px; }
+  .compose__note { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+</style>
+
+<style is:global>
+  /*
+   * The thread and the conversation list, styled globally on purpose.
+   *
+   * Astro stamps a `data-astro-*` attribute on the markup it compiles and
+   * scopes every rule in a plain <style> to it. Everything below paints DOM
+   * that `createElement` builds at runtime, which carries no such attribute —
+   * so as scoped rules these matched nothing at all, and the whole thread was
+   * rendering on browser defaults. Namespaced under `.talk` and `.settings`,
+   * which are in the markup, so "global" stays confined to this screen.
+   */
+  .talk .turns { display: flex; flex-direction: column; gap: 30px; }
+  /* An empty thread still counted as a band, so the gap between the heading
+     and the opening line was doubled. */
+  .talk .turns:empty { display: none; }
+
+  /*
+    The reasoning select, at the height of the fields above it.
+
+    `Select` was drawn for the search form, where it fills a row whose height
+    the form sets — hence `height: 100%`. Here there is nothing to fill, so it
+    collapsed to its text and sat a good deal shorter than the key and model
+    boxes beside it. These are `.input`'s own metrics, so the three line up.
+
+    Global rather than scoped: the component's markup carries its own scope
+    attribute, which a rule written here would never match.
+  */
+  .settings .sel { width: 100%; }
+  .settings .sel__btn {
+    height: auto;
+    padding: 12px 14px;
+    border-color: var(--line-strong);
+    font-size: 13px;
+    font-weight: 300;
+  }
+  .settings .sel__btn:hover { border-color: var(--ink-3); }
+  .settings .sel__btn[aria-expanded='true'] { border-color: var(--ink); }
+
+  /* The conversation list. Sits under the settings because it is used far more
+     often than they are, but read second: the key has to be there first. */
+  /* No rule of its own: the section head below already draws one, and two
+     lines a few pixels apart read as a mistake. */
+  .settings .convos { margin-top: 34px; }
+  .settings .convos__list { list-style: none; margin: 0; padding: 0; }
+  .settings .convos__empty {
+    margin: 0;
+    font-size: 12.5px;
+    font-weight: 300;
+    color: var(--ink-3);
+    line-height: 1.5;
+  }
+
+  /* One row per conversation: the question on a line of its own, what it cost
+     underneath it in grey. No box and no fill — the aside already sits on its
+     own edge, and a card around every row would out-shout the thread. */
+  .settings .convo { position: relative; display: block; }
+  .settings .convo + .convo { border-top: 1px solid var(--line); }
+  .settings .convo__open {
+    display: block;
+    width: 100%;
+    padding: 10px 26px 10px 0;
+    margin: 0;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .settings .convo__title {
+    display: block;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.4;
+    color: var(--ink-2);
+    /* One line. A long question must not push the meta line out of view, and
+       three wrapped lines per row turns the list into a wall. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .settings .convo__meta {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    font-weight: 300;
+    color: var(--ink-3);
+  }
+  .settings .convo__open:hover .convo__title { color: var(--ink); }
+
+  /* The one being written to, marked on the edge rather than with a fill. */
+  .settings .convo--current::before {
+    content: '';
+    position: absolute;
+    left: -10px;
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    background: var(--ink);
+  }
+  .settings .convo--current .convo__title { color: var(--ink); font-weight: 500; }
+
+  .settings .convo__drop {
+    position: absolute;
+    top: 8px;
+    right: 0;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    background: none;
+    border: 0;
+    border-radius: var(--radius);
+    color: var(--ink-3);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    /* Shown on hover only: it deletes, and a delete button standing on every
+       row is an invitation to lose something by mistake. */
+    opacity: 0;
+    transition: opacity 90ms ease, color 90ms ease;
+  }
+  .settings .convo:hover .convo__drop,
+  .settings .convo__drop:focus-visible { opacity: 1; }
+  .settings .convo__drop:hover { color: var(--bad); background: var(--surface); }
+
+  /* These three were left behind by the move because they sit inside media
+     queries — scoped, and so just as invisible as the rest was. */
+  @media (max-width: 1080px) {
+    .talk .sources { padding-left: var(--gutter); }
+  }
+  @media (max-width: 640px) {
+    .talk .turn { grid-template-columns: 1fr; gap: 8px; }
+    .talk .turn__role { padding-top: 0; }
+  }
+
+  /*
+    The reasoning trace. Open while it works so the wait is legible, folded
+    when it is done — the way a reader would leave it themselves.
+  */
+  .talk .trace { margin-bottom: 12px; }
+  .talk .trace__head {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    cursor: pointer;
+    list-style: none;
+    padding: 4px 0;
+  }
+  .talk .trace__head::-webkit-details-marker { display: none; }
+  /*
+    The chevron, drawn rather than typed.
+
+    `▸`/`▾` are text: they arrive in whatever the reader's font has for them,
+    sit off the baseline, and look nothing like the chevron the rest of the
+    interface uses. This is the same shape as the one in `Select`, at the same
+    weight, turned a quarter when the trace opens.
+  */
+  .talk .trace__head::before {
+    content: '';
+    width: 9px;
+    height: 9px;
+    flex: none;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg) translate(-1px, -1px);
+    transition: transform 120ms ease;
+  }
+  .talk .trace[open] .trace__head::before {
+    transform: rotate(45deg) translate(-2px, -2px);
+  }
+  .talk .trace__head:hover { color: var(--ink-2); }
+  .talk .trace__steps {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 6px 0 4px;
+    padding: 10px 0 10px 14px;
+    border-left: 1px solid var(--line);
+  }
+  .talk .trace__thought {
+    font-size: 12.5px;
+    font-weight: 300;
+    line-height: 1.6;
+    color: var(--ink-3);
+  }
+
+  /* The summaries come as headed blocks; each gets its own paragraph, and
+     `pre-wrap` is gone now that the line breaks are structure, not text. */
+  .talk .trace__thought p { margin: 0 0 6px; }
+  .talk .trace__thought p:last-child { margin-bottom: 0; }
+  .talk .trace__thought b { font-weight: 500; color: var(--ink-2); }
+  .talk .trace__thought code {
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .talk .trace__tool { margin: 0; font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .talk .trace__gear { color: var(--ink-3); margin-right: 6px; }
+  .talk .trace__out { color: var(--ink-3); }
+  .talk .trace__bad { color: var(--bad); }
+  .talk .trace__pending { color: var(--ink-3); }
+
+  /* The answer itself. Small on purpose: the model gets these and no more. */
+  .talk .ans { font-size: 14.5px; font-weight: 300; line-height: 1.65; color: var(--ink-2); }
+  .talk .ans p { margin: 0 0 0.9em; }
+  .talk .ans p:last-child { margin-bottom: 0; }
+  .talk .ans strong { font-weight: 500; color: var(--ink); }
+  .talk .ans .ans__list { margin: 0 0 0.9em; padding-left: 1.1em; }
+  .talk .ans .ans__list li { margin-bottom: 0.3em; }
+  .talk .ans .ans__quote {
+    margin: 0 0 0.9em;
+    padding: 2px 0 2px 14px;
+    border-left: 2px solid var(--line-strong);
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .talk .ans code { font-size: 12.5px; color: var(--ink); }
+
+  /* A verified citation is a link, and has to read as one.
+     These were drawn with the body's own colour and a hairline in --line-strong,
+     which made a checked case number indistinguishable from a number typed in a
+     sentence — the reader could not tell there was anywhere to click. The
+     palette is monochrome by design, so the affordance is weight and underline
+     rather than a colour the .pen file does not have. */
+  .talk .ans .ans__case, .talk .ans .ans__doc {
+    cursor: pointer;
+    text-underline-offset: 3px;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    transition: background-color 90ms ease;
+  }
+  .talk .ans .ans__case {
+    color: var(--ink);
+    font-weight: 500;
+    text-decoration-color: var(--ink);
+  }
+  .talk .ans .ans__doc {
+    color: var(--ink-2);
+    text-decoration-color: var(--line-strong);
+  }
+  .talk .ans .ans__case:hover, .talk .ans .ans__doc:hover {
+    background: var(--surface);
+    color: var(--ink);
+    text-decoration-thickness: 2px;
+  }
+
+  /*
+    A number the acervo does not hold. Shown, never linked, and marked so it
+    reads as a claim rather than as a checked fact.
+  */
+  .talk .ans .ans__unknown { color: var(--ink-3); border-bottom: 1px dotted var(--warn); cursor: help; }
+  .talk .ans .ans__error { color: var(--bad); }
+  .talk .ans .ans__tablewrap { overflow-x: auto; margin: 0 0 0.9em; }
+  .talk .ans .ans__table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  .talk .ans .ans__table th {
+    text-align: left;
+    font-weight: 400;
+    font-size: 11px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 6px 16px 6px 0;
+    border-bottom: 1px solid var(--line-strong);
+    white-space: nowrap;
+  }
+  .talk .ans .ans__table td {
+    padding: 7px 16px 7px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .talk .turn { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 18px; }
+  .talk .turn__role {
     font-size: 10px;
     font-weight: 500;
     letter-spacing: 1.2px;
     color: var(--ink-3);
     padding-top: 6px;
   }
-  .turn__role--bot { color: var(--ink); }
-  .turn__body { display: flex; flex-direction: column; gap: 16px; }
-  .turn__question { font-size: 17px; line-height: 1.5; color: var(--ink); }
-  .turn__answer { font-size: 16px; font-weight: 300; line-height: 1.6; color: var(--ink); }
-
-  @media (max-width: 640px) {
-    .turn { grid-template-columns: 1fr; gap: 8px; }
-    .turn__role { padding-top: 0; }
-  }
-
-  .cites { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
-  .cites__label { font-size: 12px; font-weight: 300; color: var(--ink-3); }
-  .chip {
+  .talk .turn__role--bot { color: var(--ink); }
+  .talk .turn__body { display: flex; flex-direction: column; gap: 16px; }
+  .talk .turn__question { font-size: 17px; line-height: 1.5; color: var(--ink); }
+  .talk .turn__answer { font-size: 16px; font-weight: 300; line-height: 1.6; color: var(--ink); }
+  .talk .cites { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+  .talk .cites__label { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+  .talk .chip {
     padding: 5px 10px;
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -166,38 +1168,14 @@ const conversation = await data.conversation(question === '' ? null : question)
     font-size: 11px;
     color: var(--ink-2);
   }
-
-  .compose { display: flex; flex-direction: column; gap: 12px; padding-bottom: 32px; }
-  .compose__field {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 16px 16px 16px 20px;
-    border: 1px solid var(--ink);
-    border-radius: var(--radius);
-  }
-  .compose__input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    font-size: 15px;
-    font-weight: 300;
-  }
-  .compose__input:disabled { color: var(--ink-3); -webkit-text-fill-color: var(--ink-3); }
-  .btn--send { padding: 9px 14px; }
-  .compose__note { font-size: 12px; font-weight: 300; color: var(--ink-3); }
-
-  .sources {
+  .talk .sources {
     display: flex;
     flex-direction: column;
     gap: 16px;
     padding: 40px var(--gutter) 40px 36px;
     background: var(--surface);
   }
-  @media (max-width: 1080px) { .sources { padding-left: var(--gutter); } }
-
-  .source {
+  .talk .source {
     display: flex;
     flex-direction: column;
     gap: 9px;
@@ -207,11 +1185,10 @@ const conversation = await data.conversation(question === '' ? null : question)
     border-radius: var(--radius);
     color: var(--ink-3);
   }
-  .source:hover { border-color: var(--line-strong); }
-  .source__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .source__num { font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
-  .source__class { font-size: 12px; font-weight: 300; color: var(--ink-3); }
-  .source__frag { font-size: 13px; font-weight: 300; line-height: 1.55; color: var(--ink-2); }
-
-  .sources__foot { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+  .talk .source:hover { border-color: var(--line-strong); }
+  .talk .source__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .talk .source__num { font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+  .talk .source__class { font-size: 12px; font-weight: 300; color: var(--ink-3); }
+  .talk .source__frag { font-size: 13px; font-weight: 300; line-height: 1.55; color: var(--ink-2); }
+  .talk .sources__foot { font-size: 12px; font-weight: 300; color: var(--ink-3); }
 </style>

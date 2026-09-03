@@ -38,8 +38,24 @@ describe('finding the acervo', () => {
   })
 
   it('takes an absolute override as it is given', () => {
-    const config = readConfig({ PJE_DB: '/srv/acervo.db', PJE_PDFS: '/srv/pdfs' } as NodeJS.ProcessEnv)
-    expect(config).toEqual({ databasePath: '/srv/acervo.db', blobRoot: '/srv/pdfs' })
+    const config = readConfig({
+      PJE_DB: '/srv/acervo.db',
+      PJE_PDFS: '/srv/pdfs',
+      PJE_CHAT_DB: '/srv/chat.db',
+    } as NodeJS.ProcessEnv)
+    expect(config).toEqual({
+      databasePath: '/srv/acervo.db',
+      blobRoot: '/srv/pdfs',
+      chatDatabasePath: '/srv/chat.db',
+    })
+  })
+
+  it('keeps the chat in a file of its own when nothing is overridden', () => {
+    // Two databases, not one. The conversations belong to the demo; the acervo
+    // is the scraper's output, and its schema has no business holding a chat.
+    const config = readConfig({} as NodeJS.ProcessEnv)
+    expect(config.chatDatabasePath).not.toBe(config.databasePath)
+    expect(config.chatDatabasePath.endsWith('data/chat.db')).toBe(true)
   })
 
   it('resolves a relative override against the directory the server was started in', () => {

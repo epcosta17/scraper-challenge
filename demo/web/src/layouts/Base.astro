@@ -7,10 +7,18 @@ import '../styles/app.css'
 interface Props {
   title: string
   description?: string
-  current?: 'expedientes' | 'busqueda' | 'procesos' | 'chat' | null
+  current?: 'expedientes' | 'busqueda' | 'procesos' | 'agente' | null
+  /**
+   * Pins the page to the viewport instead of letting it grow.
+   *
+   * For a screen whose own body scrolls — the chat, where the box you type in
+   * has to stay put while the conversation moves behind it. Everywhere else
+   * the page grows and the window scrolls, which is the right default.
+   */
+  fixed?: boolean
 }
 
-const { title, description, current = null } = Astro.props
+const { title, description, current = null, fixed = false } = Astro.props
 ---
 
 <!doctype html>
@@ -29,7 +37,7 @@ const { title, description, current = null } = Astro.props
     />
   </head>
   <body>
-    <div class="page">
+    <div class={fixed ? 'page page--fixed' : 'page'}>
       <Nav current={current} />
       <ArchiveNotice />
       <main>

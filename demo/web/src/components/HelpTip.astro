@@ -1,0 +1,82 @@
+---
+interface Props {
+  /** The words beside the mark. Kept short: this is a label, not the help. */
+  label: string
+  /** Where the panel hangs from, when the mark sits near the right edge. */
+  align?: 'left' | 'right'
+  /** How wide the panel is allowed to get. */
+  width?: number
+}
+
+const { label, align = 'left', width = 420 } = Astro.props
+const id = `tip-${Math.random().toString(36).slice(2, 9)}`
+---
+
+{/*
+  Reference that floats on hover, so it is at hand without being in the way.
+
+  Extracted from the search screen rather than written twice: two tooltips that
+  behave differently on the same site is a worse outcome than either of them.
+
+  `tabindex` and `:focus-within` are not decoration — a tooltip that answers
+  only to a mouse is a tooltip half the people cannot open. `aria-describedby`
+  is what makes the panel readable to a screen reader at all.
+*/}
+<div class="tip" data-align={align}>
+  <span class="tip__ask" tabindex="0" role="button" aria-describedby={id}>
+    <span class="tip__mark" aria-hidden="true">?</span>
+    {label !== '' && <span>{label}</span>}
+  </span>
+  <div class="tip__panel" id={id} role="tooltip" style={`--tip-width: ${width}px`}>
+    <slot />
+  </div>
+</div>
+
+<style>
+  .tip { position: relative; display: inline-block; }
+  .tip__ask {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--ink-3);
+    cursor: help;
+  }
+  .tip__ask:hover, .tip__ask:focus-visible { color: var(--ink-2); }
+  .tip__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    font-size: 10px;
+    line-height: 1;
+  }
+  .tip__ask:hover .tip__mark, .tip__ask:focus-visible .tip__mark { border-color: var(--ink-3); }
+
+  .tip__panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    z-index: 20;
+    width: max-content;
+    max-width: min(var(--tip-width), 82vw);
+    padding: 16px 18px;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgb(17 17 17 / 8%);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 110ms ease, visibility 110ms ease;
+  }
+  .tip[data-align='left'] .tip__panel { left: 0; }
+  /* Anchored on its right edge when the mark sits near the edge of the screen,
+     or the panel would open off it. */
+  .tip[data-align='right'] .tip__panel { right: 0; }
+
+  .tip:hover .tip__panel,
+  .tip:focus-within .tip__panel { opacity: 1; visibility: visible; }
+</style>

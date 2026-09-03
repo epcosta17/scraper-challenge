@@ -389,3 +389,22 @@ export interface HeldCase {
   className: string
   organ: string | null
 }
+
+/** One document plus the case it sits in, for listings that cross cases. */
+export interface DocumentSample {
+  id: number
+  label: string
+  docDate: string | null
+  format: string | null
+  caseNumber: string
+  className: string
+}
+
+/** A document's words, with enough context to cite it. */
+export interface DocumentText {
+  id: number
+  label: string
+  docDate: string | null
+  caseNumber: string
+  text: string
+}

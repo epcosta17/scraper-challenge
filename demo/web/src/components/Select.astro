@@ -217,6 +217,10 @@ const chosen = options.find((o) => o.value === value)
         for (const other of options) {
           other.setAttribute('aria-selected', other === option ? 'true' : 'false')
         }
+        // A hidden input assigned by script fires nothing on its own, so any
+        // page that wants to react to a choice — saving it, say — would never
+        // hear about it. This is what a real <select> would have sent.
+        input.dispatchEvent(new Event('change', { bubbles: true }))
         close()
         button.focus()
       })

@@ -3,7 +3,7 @@ import { data } from '../data/index.ts'
 
 interface Props {
   /** Which top-level section is showing. */
-  current?: 'expedientes' | 'busqueda' | 'procesos' | 'chat' | null
+  current?: 'expedientes' | 'busqueda' | 'procesos' | 'agente' | null
 }
 
 const { current = null } = Astro.props
@@ -16,7 +16,7 @@ const links = [
   // The queue was reachable only through the status pill, which reads as an
   // indicator rather than a way in. It is a section like the others.
   { key: 'procesos', href: '/procesos', label: 'Procesos' },
-  { key: 'chat', href: '/chat', label: 'Chat' },
+  { key: 'agente', href: '/agente', label: 'Agente' },
 ] as const
 ---
 

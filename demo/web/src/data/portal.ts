@@ -23,6 +23,15 @@ import {
 export interface PortalHit {
   idProcessoTrf: number
   number: string
+  /**
+   * What the portal's own result row shows, carried through rather than
+   * discarded. It costs no extra request, and it is the difference between a
+   * search result that is a list of numbers and one a person can read.
+   */
+  className?: string
+  subject?: string
+  parties?: string
+  lastMovement?: { description: string; timestamp?: string }
 }
 
 export type PortalSearchOutcome =
@@ -117,7 +126,14 @@ export function createPortalSearch(): PortalSearch {
         const outcome = await search(client, session, filters)
         return {
           ok: true,
-          hits: outcome.rows.map((r) => ({ idProcessoTrf: r.idProcessoTrf, number: r.number })),
+          hits: outcome.rows.map((r) => ({
+            idProcessoTrf: r.idProcessoTrf,
+            number: r.number,
+            className: r.className,
+            subject: r.subject,
+            parties: r.parties,
+            lastMovement: r.lastMovement,
+          })),
           capped: outcome.capped,
           elapsedMs: Date.now() - startedAt,
         }

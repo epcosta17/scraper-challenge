@@ -3,6 +3,10 @@ import type {
   ArchiveStatus,
   CaseDetail,
   CasePage,
+  CaseSummary,
+  Job,
+  DocumentSample,
+  DocumentText,
   CaptureOverview,
   ClassOption,
   OrganOption,
@@ -46,6 +50,40 @@ export interface WebDataSource {
 
   /** One page of the acervo, newest capture first. `page` is 1-based. */
   listCases(page: number, pageSize: number): Promise<CasePage>
+
+  /**
+   * The cases with the newest activity in the court, by their own last
+   * movement — which is a different question from `listCases`'s "most
+   * recently captured": a case crawled this morning may have sat still since
+   * 2019.
+   */
+  recentlyMoved(limit: number): Promise<CaseSummary[]>
+
+  /**
+   * Documents from across the acervo, for browsing rather than searching —
+   * the "show me a few" that every other document query, needing an id or a
+   * case, cannot answer.
+   */
+  sampleDocuments(limit: number, order: 'random' | 'recent'): Promise<DocumentSample[]>
+
+  /**
+   * A document's captured text, for reading rather than downloading.
+   *
+   * Separate from `openDocument` on purpose: that one serves the viewer and
+   * hands back the PDF bytes when there is a file, which is right for a
+   * browser and useless to anything that needs to read the words. Both the
+   * markup and the PDF text are kept, so this never has to parse a blob.
+   */
+  documentText(id: number): Promise<DocumentText | null>
+
+  /**
+   * The case each of these documents belongs to, for the ids that exist.
+   *
+   * A citation in an answer has to become a link to the document *in its case
+   * file*, which is where the viewer lives — the raw file behind
+   * `/documentos/:id` is a download, not a reading experience.
+   */
+  documentCases(ids: number[]): Promise<Map<number, string>>
 
   /** A single case by its CNJ number, or null when it is not in the acervo. */
   getCase(number: string): Promise<CaseDetail | null>
@@ -104,6 +142,23 @@ export interface WebDataSource {
 
   /** The same index, asked in prose: the passages an answer would stand on. */
   conversation(question: string | null): Promise<Conversation>
+
+  /**
+   * The CNJ number behind an internal id, or null.
+   *
+   * A capture is queued by internal id as readily as by number, so anything
+   * checking on one afterwards needs to get from that id back to a case.
+   */
+  caseNumberById(idProcessoTrf: number): Promise<string | null>
+
+  /**
+   * One job by its id, however old.
+   *
+   * `captureOverview` only carries the last window of jobs, which is right for
+   * a screen and wrong for anything following a particular job: a queue busy
+   * enough to push it out of that window is exactly when you want to know.
+   */
+  job(id: number): Promise<Job | null>
 
   /** Live state of the capture queue: KPIs, jobs and unresolved failures. */
   captureOverview(): Promise<CaptureOverview>
