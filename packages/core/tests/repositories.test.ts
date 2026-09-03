@@ -7,9 +7,9 @@ import {
   openDatabase, upsertCase, getCaseByNumber, getCaseById, getMaxCaseId,
   recordProbe, getProbedIds, recordFailure, listFailures, FsBlobStore,
   DuplicateCaseNumberError,
-  upsertDocument, isDocumentDownloaded, getDocumentsByCase,
+  upsertDocument, isDocumentDownloaded, getDocumentsByCase, sampleDocuments,
   replacePartiesForCase, getPartiesByCase,
-  replaceMovementsForCase, getMovementsByCase,
+  replaceMovementsForCase, getMovementsByCase, listCasesByLastMovement,
 } from '../src/index.ts'
 
 const sample = {
@@ -520,5 +520,91 @@ describe('which source of movements wins', () => {
     upsertCase(db, aCase(1))
     replaceMovementsForCase(db, 1, rows(5, 'pdf'), 'pdf')
     expect(getMovementsByCase(db, 1)).toHaveLength(5)
+  })
+})
+
+describe('listCasesByLastMovement', () => {
+  /**
+   * "Recent" is two different questions, and this is the one the acervo
+   * listing cannot answer: the newest activity in the court, as opposed to
+   * whatever the crawler touched last.
+   */
+  it('orders by the newest movement, not by capture', () => {
+    upsertCase(db, { ...sample, idProcessoTrf: 1, number: '0000001-00.2020.4.05.0000' })
+    upsertCase(db, { ...sample, idProcessoTrf: 2, number: '0000002-00.2020.4.05.0000' })
+    upsertCase(db, { ...sample, idProcessoTrf: 3, number: '0000003-00.2020.4.05.0000' })
+
+    // Case 1 was captured first but moved most recently; case 3 is the reverse.
+    replaceMovementsForCase(db, 1, [{ position: 1, timestamp: '05/03/2026 09:00', description: 'Conclusos' }])
+    replaceMovementsForCase(db, 2, [{ position: 1, timestamp: '02/01/2026 09:00', description: 'Distribuído' }])
+    replaceMovementsForCase(db, 3, [{ position: 1, timestamp: '11/11/2019 09:00', description: 'Arquivado' }])
+
+    expect(listCasesByLastMovement(db, 10).map((c) => c.number)).toEqual([
+      '0000001-00.2020.4.05.0000',
+      '0000002-00.2020.4.05.0000',
+      '0000003-00.2020.4.05.0000',
+    ])
+  })
+
+  it('sorts dd/mm/yyyy across years rather than as text', () => {
+    // The trap the SQL exists to avoid: as plain text, '11/11/2019' sorts
+    // above '05/03/2026', and the oldest case would head the list.
+    upsertCase(db, { ...sample, idProcessoTrf: 1, number: '0000001-00.2020.4.05.0000' })
+    upsertCase(db, { ...sample, idProcessoTrf: 2, number: '0000002-00.2020.4.05.0000' })
+    replaceMovementsForCase(db, 1, [{ position: 1, timestamp: '05/03/2026 09:00', description: 'Conclusos' }])
+    replaceMovementsForCase(db, 2, [{ position: 1, timestamp: '11/11/2019 09:00', description: 'Arquivado' }])
+
+    expect(listCasesByLastMovement(db, 10)[0]!.number).toBe('0000001-00.2020.4.05.0000')
+  })
+
+  it('leaves out cases with no movements, and honours the limit', () => {
+    upsertCase(db, { ...sample, idProcessoTrf: 1, number: '0000001-00.2020.4.05.0000' })
+    upsertCase(db, { ...sample, idProcessoTrf: 2, number: '0000002-00.2020.4.05.0000' })
+    replaceMovementsForCase(db, 1, [{ position: 1, timestamp: '05/03/2026 09:00', description: 'Conclusos' }])
+
+    // Case 2 has none: a case whose movements were never captured has no
+    // activity date to sort by, and guessing one would invent a fact.
+    expect(listCasesByLastMovement(db, 10)).toHaveLength(1)
+    expect(listCasesByLastMovement(db, 0)).toHaveLength(0)
+  })
+})
+
+describe('sampleDocuments', () => {
+  const doc = {
+    idProcessoDocumento: 1,
+    idProcessoTrf: 130100,
+    idBin: 900,
+    numeroDocumento: 'abc',
+    label: '24/07/2025 20:30:45 - Despacho (Despacho)',
+    docType: 'Despacho',
+    docDate: '24/07/2025 20:30:45',
+    pdfKey: 'a.pdf',
+    textContent: null,
+  }
+
+  beforeEach(() => { upsertCase(db, sample) })
+
+  it('carries the case each document belongs to', () => {
+    // The whole point of the query: a document listed on its own is unusable,
+    // because a reader cannot get from it back to the case.
+    upsertDocument(db, doc)
+    const [got] = sampleDocuments(db, 5)
+    expect(got).toMatchObject({ idProcessoDocumento: 1, caseNumber: sample.number, className: sample.className })
+  })
+
+  it('orders by document date, newest first, undated last', () => {
+    upsertDocument(db, { ...doc, idProcessoDocumento: 1, docDate: '11/11/2019 09:00:00' })
+    upsertDocument(db, { ...doc, idProcessoDocumento: 2, docDate: '05/03/2026 09:00:00' })
+    upsertDocument(db, { ...doc, idProcessoDocumento: 3, docDate: null })
+
+    expect(sampleDocuments(db, 5, 'recent').map((d) => d.idProcessoDocumento)).toEqual([2, 1, 3])
+  })
+
+  it('leaves out documents that were never downloaded', () => {
+    // A queued document has a row but nothing behind it. Offering it would
+    // promise the agent something `leer_documento` cannot then open.
+    upsertDocument(db, doc)
+    db.prepare('UPDATE documents SET downloaded_at = NULL WHERE id_processo_documento = 1').run()
+    expect(sampleDocuments(db, 5)).toHaveLength(0)
   })
 })

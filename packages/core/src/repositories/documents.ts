@@ -104,3 +104,45 @@ export function getDocumentsByCase(db: Db, idProcessoTrf: number): StoredDocumen
     .all(idProcessoTrf) as Row[]
   return rows.map(toStored)
 }
+
+/** A document with the case it belongs to, for listings that cross cases. */
+export interface SampledDocument extends StoredDocument {
+  caseNumber: string
+  className: string
+}
+
+/**
+ * Documents from across the acervo, for browsing rather than searching.
+ *
+ * Every other document query needs an id or a case, which leaves no way to
+ * answer "show me a few" — the question someone asks before they know what is
+ * in here. `random` is the honest reading of "any three"; `recent` orders by
+ * the document's own date, newest first.
+ *
+ * Only downloaded documents are returned: one still queued has a row but no
+ * content behind it, and offering it would promise something unreadable.
+ */
+export function sampleDocuments(
+  db: Db,
+  limit: number,
+  order: 'random' | 'recent' = 'random',
+): SampledDocument[] {
+  const rows = db.prepare(`
+    SELECT d.*, c.number AS case_number, c.class_name AS case_class_name
+    FROM documents d
+    JOIN cases c ON c.id_processo_trf = d.id_processo_trf
+    WHERE d.downloaded_at IS NOT NULL
+    ORDER BY ${order === 'recent'
+      // dd/mm/yyyy reordered so it sorts as text; undated documents last.
+      ? `CASE WHEN d.doc_date IS NULL THEN 1 ELSE 0 END,
+         substr(d.doc_date, 7, 4) || substr(d.doc_date, 4, 2) || substr(d.doc_date, 1, 2) DESC`
+      : 'RANDOM()'}
+    LIMIT ?
+  `).all(limit) as Array<Row & { case_number: string; case_class_name: string }>
+
+  return rows.map((r) => ({
+    ...toStored(r),
+    caseNumber: r.case_number,
+    className: r.case_class_name,
+  }))
+}

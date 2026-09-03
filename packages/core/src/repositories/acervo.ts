@@ -240,6 +240,32 @@ export interface AcervoOrgan {
  * only honestly offer what is in the acervo. Listing every panel of the TRF5
  * would put values in the menu that cannot match a single row.
  */
+/**
+ * Cases ordered by their own most recent movement — the newest activity in
+ * the court, as opposed to the most recently captured.
+ *
+ * Two different questions hide under the word "recent", and they answer
+ * differently: a case crawled this morning may have sat still since 2019.
+ * Timestamps are `dd/mm/yyyy hh:mm:ss`, so they are reordered to sort as
+ * text rather than parsed into dates.
+ */
+export function listCasesByLastMovement(db: Db, limit: number): AcervoCaseRow[] {
+  return db.prepare(`
+    SELECT ${CASE_COLUMNS}
+    FROM cases c
+    JOIN (
+      SELECT id_processo_trf,
+             MAX(substr(timestamp, 7, 4) || substr(timestamp, 4, 2) || substr(timestamp, 1, 2)
+                 || substr(timestamp, 12)) AS at
+      FROM movements
+      WHERE timestamp IS NOT NULL AND length(timestamp) >= 10
+      GROUP BY id_processo_trf
+    ) m ON m.id_processo_trf = c.id_processo_trf
+    ORDER BY m.at DESC
+    LIMIT ?
+  `).all(limit).map((r) => toCaseRow(r as CaseRow))
+}
+
 export function listCaseOrgans(db: Db): AcervoOrgan[] {
   const rows = db.prepare(`
     SELECT court, COUNT(*) AS case_count
