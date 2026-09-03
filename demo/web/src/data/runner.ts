@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
+import { findRepoRoot } from './config.ts'
 
 /**
  * Starts the worker from the web, because the alternative is a screen that
@@ -22,10 +22,23 @@ import { dirname, resolve } from 'node:path'
  * simply means the two of them share the queue.
  */
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-/** `demo/web/src/data` -> the repository root. */
-const REPO_ROOT = resolve(HERE, '..', '..', '..', '..')
-const WORKER_ENTRY = resolve(REPO_ROOT, 'demo/worker/src/cli.ts')
+/**
+ * Where the worker lives, found rather than counted.
+ *
+ * This used to be four `..` from this file, which is correct where the source
+ * sits and wrong the moment `astro build` bundles it into
+ * `dist/server/chunks/` — the same four segments then land in `demo/`, and the
+ * built server pointed at a `demo/demo/worker` that does not exist. Enqueuing
+ * still worked, so nothing failed loudly: the queue simply filled up and no
+ * worker ever started. `config.ts` already climbs to the workspace root for
+ * exactly this reason; this now does the same.
+ *
+ * `PJE_WORKER` overrides it, for a layout where the worker is somewhere else.
+ */
+const REPO_ROOT = findRepoRoot()
+const WORKER_ENTRY = process.env.PJE_WORKER?.trim()
+  ? resolve(process.env.PJE_WORKER.trim())
+  : resolve(REPO_ROOT, 'demo/worker/src/cli.ts')
 
 export interface RunnerConfig {
   databasePath: string

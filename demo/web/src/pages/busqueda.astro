@@ -1,6 +1,7 @@
 ---
 import Base from '../layouts/Base.astro'
 import Icon from '../components/Icon.astro'
+import HelpTip from '../components/HelpTip.astro'
 import { data, portal, runner, PORTAL_ROW_LIMIT } from '../data/index.ts'
 import type { SearchFilters } from '@pje/scraper'
 import { formatInt, formatSeconds } from '../lib/format.ts'
@@ -160,20 +161,12 @@ const found = outcome !== null && outcome.ok ? outcome : null
     <h1 class="page-title page-title--md">Consulta al TRF5</h1>
 
     {/*
-      The portal's rules, as a panel that floats on hover. Each one is
-      something the server does silently rather than reporting, so they are
-      worth having at hand — but they are reference, not instruction, and
-      nothing on this screen should make you read past them to reach the form.
-
-      `tabindex` and `:focus-within` are not decoration: a tooltip that only
-      answers to a mouse is a tooltip half the people cannot open.
+      The portal's rules. Each one is something the server does silently rather
+      than reporting, so they are worth having at hand — but they are reference,
+      not instruction, and nothing here should make you read past them to reach
+      the form. The floating behaviour lives in HelpTip, shared with the chat.
     */}
-    <div class="rules">
-      <span class="rules__ask" tabindex="0" role="button" aria-describedby="rules-panel">
-        <span class="rules__mark" aria-hidden="true">?</span>
-        <span>Reglas del portal</span>
-      </span>
-      <div class="rules__panel" id="rules-panel" role="tooltip">
+    <HelpTip label="Reglas del portal" width={520}>
         <dl class="syntax">
           <div class="syntax__row">
             <dt>Parte y abogado</dt>
@@ -199,8 +192,7 @@ const found = outcome !== null && outcome.ok ? outcome : null
             </dd>
           </div>
         </dl>
-      </div>
-    </div>
+    </HelpTip>
   </section>
 
   <div class="split" style="--aside: 440px">
@@ -734,46 +726,6 @@ const found = outcome !== null && outcome.ok ? outcome : null
   }
   .date__open:hover { color: var(--ink); }
   /* The rules: a panel that floats over the page, on hover or focus. */
-  .rules { position: relative; display: inline-block; margin-top: 10px; }
-  .rules__ask {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 12px;
-    color: var(--ink-3);
-    cursor: help;
-  }
-  .rules__ask:hover, .rules__ask:focus-visible { color: var(--ink-2); }
-  .rules__mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    border: 1px solid var(--line-strong);
-    border-radius: 50%;
-    font-size: 10px;
-    line-height: 1;
-  }
-  .rules__panel {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    z-index: 20;
-    width: min(460px, calc(100vw - 48px));
-    padding: 14px 16px;
-    border: 1px solid var(--line-strong);
-    background: var(--paper);
-    /* The one shadow on the page: it is the only element that floats over
-       another, and without it the panel reads as part of what it covers. */
-    box-shadow: 0 6px 24px rgb(17 17 17 / 10%);
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 90ms ease, visibility 90ms;
-  }
-  .rules:hover .rules__panel,
-  .rules:focus-within .rules__panel { opacity: 1; visibility: visible; }
-  .rules__panel .syntax { margin: 0; }
 
   .head {
     display: flex;

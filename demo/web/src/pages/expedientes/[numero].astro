@@ -547,6 +547,22 @@ const movements = caseFile
     dialog.addEventListener('click', (event) => {
       if (event.target === dialog) dialog.close()
     })
+
+    // Arriving with ?documento= opens that document straight away. This is what
+    // a citation in the chat links to: the answer names a document, and the
+    // link has to land on the document being read, not on a case file with
+    // forty rows and no indication of which one was meant.
+    const wanted = new URLSearchParams(location.search).get('documento')
+    if (wanted !== null) {
+      const index = links.findIndex((link) => link.dataset.view === wanted)
+      if (index !== -1) {
+        void show(index)
+        dialog.showModal()
+        // The row is scrolled to as well, so closing the viewer leaves the
+        // reader looking at the document they came for.
+        links[index]!.scrollIntoView({ block: 'center' })
+      }
+    }
   }
 
   /**
@@ -702,15 +718,16 @@ const movements = caseFile
   .viewer__frame {
     display: block;
     width: 100%;
-    /* The bar is 45px; the frame takes the rest so the PDF fills the dialog. */
-    height: calc(100% - 45px);
+    /* The whole of the body, which has already taken the 45px bar off the
+       dialog. Subtracting it a second time here left a strip of the document
+       below the fold with nothing to scroll it. */
+    height: 100%;
     border: 0;
     background: var(--surface);
   }
 
   @media (max-width: 640px) {
-    .viewer { width: 100vw; height: 100vh; border: 0; }
-    .viewer__frame { height: calc(100% - 45px); }
+    .viewer { width: 100vw; height: 100dvh; border: 0; }
   }
 
   .missing {

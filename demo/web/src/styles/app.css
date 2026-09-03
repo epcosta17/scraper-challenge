@@ -58,10 +58,40 @@ summary:focus-visible {
 
 button, input, select { font: inherit; color: inherit; }
 
+/*
+  `hidden` means hidden, whatever the element's own rules say.
+
+  The browser's `[hidden] { display: none }` is a plain author-level rule, so
+  any `display` we set on a class beats it — and every panel worth hiding has
+  one. This has cost three separate bugs here: a failures tab that showed under
+  the main list, an empty state that stayed under every answer, and a PDF
+  container that kept its full height while an HTML document was displayed,
+  pushing the document out of its own dialog.
+
+  One rule ends the whole class of it, which is why every reset carries it.
+*/
+[hidden] { display: none !important; }
+
 .mono { font-family: var(--mono); font-weight: 400; font-variant-ligatures: none; }
 
 .page { min-height: 100vh; display: flex; flex-direction: column; }
 .page > main { flex: 1; display: flex; flex-direction: column; }
+
+/* A page that fills the window exactly and never grows, so a screen inside it
+   can scroll its own body. `min-height: 0` on the descendants is what actually
+   lets a flex child shrink below its content — without it the child sizes to
+   its content and the scroll never appears. */
+.page--fixed { height: 100dvh; min-height: 0; overflow: hidden; }
+.page--fixed > main { min-height: 0; }
+.page--fixed .split { min-height: 0; }
+.page--fixed .split__main, .page--fixed .split__aside { min-height: 0; }
+
+/* Narrow, the split stacks and two scrolling columns become one long page.
+   Pinning the viewport there would squash both into nothing, so the page goes
+   back to growing and the window scrolls, as everywhere else. */
+@media (max-width: 1080px) {
+  .page--fixed { height: auto; min-height: 100vh; overflow: visible; }
+}
 
 .gutter { padding-inline: var(--gutter); }
 
