@@ -154,21 +154,26 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       // worth keeping as a defence for any other caller of `search()`.
       validateFilters(args.filters)
       if (args.dryRun) {
-        return emitDryRunPlan({ dryRun: true, command: 'search', filters: args.filters }, args.json)
+        return emitDryRunPlan({ dryRun: true, command: 'search', filters: args.filters }, !args.text)
       }
       reporter.header(searchRunHeader(args.filters))
       reporter.note('starting a session')
       const session = await startSession(client)
       reporter.note('submitting the search form')
       const outcome = await search(client, session, args.filters)
-      if (args.json) {
-        console.log(JSON.stringify(outcome, null, 2))
-      } else {
+      // JSON is the default here, unlike every other command. A result row
+      // carries the class, the subject, the parties and the last movement, and
+      // the one-line form can only show the identifiers — so the old default
+      // threw away most of what the request had already paid for. `--text`
+      // asks for that short form when a person is reading along.
+      if (args.text) {
         for (const row of outcome.rows) {
           console.log(`${row.number}  id=${row.idProcessoTrf}  ca=${row.ca}`)
         }
         console.log(`\n${outcome.rows.length} results`)
         if (outcome.capped) console.log(cappedWarning())
+      } else {
+        console.log(JSON.stringify(outcome, null, 2))
       }
       return 0
     }

@@ -391,14 +391,29 @@ describe('main — --dry-run under --json prints a JSON plan, not prose', () => 
     await main(['crawl', '--from-id', '130100', '--to-id', '130105', '--dry-run'], { fetchImpl })
     await main(['deep', '130100', '--dry-run'], { fetchImpl })
     await main(['deep', '--from-id', '1', '--to-id', '2', '--dry-run'], { fetchImpl })
-    await main(['search', '--number', '0013201-41.2025.4.05.8202', '--dry-run'], { fetchImpl })
-
+    // `search` is deliberately absent here: it is the one command whose
+    // default is JSON, so its prose plan needs `--text` (asserted below).
     expect(logSpy.mock.calls.map((c) => String(c[0]))).toEqual([
       'Would crawl from 130100 to 130105',
       'Would deep-fetch case 130100',
       'Would deep-fetch every case from id 1 to 2',
-      'Would search with filters: {"number":"0013201-41.2025.4.05.8202"}',
     ])
+  })
+
+  it('gives `search` a JSON plan by default and prose only under --text', async () => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchImpl = vi.fn(throwingFetch())
+
+    await main(['search', '--number', '0013201-41.2025.4.05.8202', '--dry-run'], { fetchImpl })
+    await main(['search', '--number', '0013201-41.2025.4.05.8202', '--dry-run', '--text'], { fetchImpl })
+
+    const [asJson, asProse] = logSpy.mock.calls.map((c) => String(c[0]))
+    expect(JSON.parse(asJson!)).toEqual({
+      dryRun: true,
+      command: 'search',
+      filters: { number: '0013201-41.2025.4.05.8202' },
+    })
+    expect(asProse).toBe('Would search with filters: {"number":"0013201-41.2025.4.05.8202"}')
   })
 })
 

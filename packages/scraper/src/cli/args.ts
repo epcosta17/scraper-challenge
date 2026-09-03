@@ -36,6 +36,8 @@ export interface ParsedArgs {
   db: string
   out: string
   json: boolean
+  /** `search` prints JSON by default; this asks for the short form. */
+  text: boolean
   verbose: boolean
   quiet: boolean
   dryRun: boolean
@@ -71,6 +73,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     db: 'data/pje.db',
     out: 'data/pdfs',
     json: false,
+    text: false,
     verbose: false,
     quiet: false,
     dryRun: false,
@@ -138,6 +141,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--db': out.db = value(arg, i++); break
       case '--out': out.out = value(arg, i++); break
       case '--json': out.json = true; break
+      case '--text': out.text = true; break
       case '--verbose': out.verbose = true; break
       case '--quiet': out.quiet = true; break
       case '--dry-run': out.dryRun = true; break
@@ -339,7 +343,8 @@ GENERAL
   --rate <n>            requests per second (default: 2)
   --db <path>           SQLite file (default: data/pje.db)
   --out <path>          PDF directory (default: data/pdfs)
-  --json                machine-readable output
+  --json                machine-readable output (already the default for 'search')
+  --text                'search' only: the one-line-per-row form instead of JSON
   --verbose             add per-request detail (URLs, status codes, retries, 429
                          backoff) on top of the default narration
   --quiet               print only the final result — nothing on stderr
