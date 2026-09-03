@@ -13,3 +13,6 @@ data/
 
 # ruido de macOS
 .DS_Store
+
+# archivo de diseño, abierto en otra aplicación — nunca al repositorio
+web.pen
