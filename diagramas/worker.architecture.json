@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "demo/worker — la cola y sus handlers",
+    "output": "worker.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "reclamo",
+        "label": "Reclamar un trabajo",
+        "focus": [
+          "cola",
+          "bucle",
+          "lease"
+        ],
+        "note": "Una sola sentencia UPDATE marca el trabajo como propio: dos workers pueden competir sin pisarse."
+      },
+      {
+        "id": "handlers",
+        "label": "Un handler por tipo",
+        "focus": [
+          "bucle",
+          "recorrido",
+          "caso",
+          "rango",
+          "scraper"
+        ],
+        "note": "Cuatro handlers para seis tipos: crawl, discover y backfill son el mismo; deep_case y refresh_case difieren solo en cómo llegan al caso."
+      },
+      {
+        "id": "escritura",
+        "label": "Lo que queda escrito",
+        "focus": [
+          "scraper",
+          "acervo",
+          "fallos",
+          "progreso"
+        ],
+        "note": "El progreso se publica contra el intento vivo; un intento viejo no puede sobreescribirlo."
+      }
+    ],
+    "animation": "trace"
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 150,
+    "gapY": 130
+  },
+  "components": [
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI del worker",
+      "sublabel": "--watch --rate",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "La web",
+      "sublabel": "runner.ts",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "cola",
+      "type": "messagebus",
+      "label": "Cola",
+      "sublabel": "tabla jobs",
+      "tag": "reclamo atómico",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "lease",
+      "type": "security",
+      "label": "Lease",
+      "sublabel": "silencio con plazo",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "bucle",
+      "type": "backend",
+      "label": "Bucle del worker",
+      "sublabel": "worker.ts",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "progreso",
+      "type": "backend",
+      "label": "Progreso",
+      "sublabel": "paso y avance",
+      "tag": "atado al intento",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "recorrido",
+      "type": "backend",
+      "label": "Recorrido",
+      "sublabel": "crawl · discover",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "caso",
+      "type": "backend",
+      "label": "Un caso",
+      "sublabel": "deep · refresh",
+      "row": 2,
+      "col": 2,
+      "tag": "dos handlers, un ayudante"
+    },
+    {
+      "id": "rango",
+      "type": "backend",
+      "label": "Un rango",
+      "sublabel": "deep_range",
+      "row": 2,
+      "col": 3
+    },
+    {
+      "id": "scraper",
+      "type": "backend",
+      "label": "Scraper",
+      "sublabel": "@pje/scraper",
+      "row": 3,
+      "col": 2
+    },
+    {
+      "id": "acervo",
+      "type": "database",
+      "label": "Acervo",
+      "sublabel": "data/pje.db",
+      "row": 3,
+      "col": 1
+    },
+    {
+      "id": "fallos",
+      "type": "database",
+      "label": "Fallos",
+      "sublabel": "con su motivo",
+      "row": 3,
+      "col": 3
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "cuatro handlers para seis tipos de trabajo",
+      "wraps": [
+        "recorrido",
+        "caso",
+        "rango"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-cola",
+      "from": "cli",
+      "to": "cola",
+      "label": "lo arranca una persona"
+    },
+    {
+      "id": "web-cola",
+      "from": "web",
+      "to": "cola",
+      "label": "o lo arranca la web",
+      "labelDy": 24
+    },
+    {
+      "id": "cola-bucle",
+      "from": "cola",
+      "to": "bucle",
+      "label": "un UPDATE lo hace mío",
+      "variant": "emphasis",
+      "labelDy": 39,
+      "labelDx": -30
+    },
+    {
+      "id": "lease-cola",
+      "from": "lease",
+      "to": "cola",
+      "label": "vencido, otro lo toma",
+      "variant": "security"
+    },
+    {
+      "id": "bucle-progreso",
+      "from": "bucle",
+      "to": "progreso",
+      "label": "latido y avance"
+    },
+    {
+      "id": "bucle-recorrido",
+      "from": "bucle",
+      "to": "recorrido",
+      "label": "ids desconocidos"
+    },
+    {
+      "id": "bucle-caso",
+      "from": "bucle",
+      "to": "caso",
+      "label": "por número o id",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "bucle-rango",
+      "from": "bucle",
+      "to": "rango",
+      "label": "ids seguidos"
+    },
+    {
+      "id": "caso-scraper",
+      "from": "caso",
+      "to": "scraper",
+      "label": "peticiones con ritmo",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "scraper-acervo",
+      "from": "scraper",
+      "to": "acervo",
+      "label": "escribe lo leído",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scraper-fallos",
+      "from": "scraper",
+      "to": "fallos",
+      "label": "lo que no cuadró",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "La cola es una tabla",
+      "items": [
+        "Reclamar es un solo UPDATE condicionado: dos workers no se pisan",
+        "Cada reclamo incrementa el intento y refresca el latido",
+        "No hay planificador: se arranca un worker cuando hay trabajo"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Nadie se queda con un trabajo",
+      "items": [
+        "El lease vence si un trabajo lleva demasiado tiempo en silencio",
+        "El progreso solo lo escribe el intento vivo, nunca uno reclamado antes",
+        "Agotados los intentos, el trabajo queda en failed con su motivo"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Seis tipos, cuatro handlers",
+      "items": [
+        "crawl, discover y backfill son el mismo trabajo con otro nombre",
+        "deep_case y refresh_case son handlers distintos sobre un ayudante común",
+        "refresh_case falla si el expediente no está ya capturado"
+      ]
+    }
+  ]
+}

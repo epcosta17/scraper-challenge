@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Plataforma del demo — web, worker y acervo",
+    "output": "demo.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "lectura",
+        "label": "Solo lectura",
+        "focus": [
+          "navegador",
+          "astro",
+          "datos",
+          "sqlite",
+          "chatdb"
+        ],
+        "note": "Las páginas nunca capturan: leen el acervo que el worker llenó."
+      },
+      {
+        "id": "captura",
+        "label": "Encolar y capturar",
+        "focus": [
+          "astro",
+          "cola",
+          "worker",
+          "scraper",
+          "portal"
+        ],
+        "note": "La web encola y arranca un worker; quien habla con el tribunal es el worker, en otro proceso."
+      },
+      {
+        "id": "agente",
+        "label": "El agente",
+        "focus": [
+          "agente",
+          "gemini",
+          "datos",
+          "cola"
+        ],
+        "note": "Diez herramientas y ninguna otra puerta: sin conexión a la base ni cliente HTTP propios."
+      }
+    ],
+    "animation": "trace"
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 150,
+    "gapY": 130
+  },
+  "components": [
+    {
+      "id": "navegador",
+      "type": "external",
+      "label": "Navegador",
+      "sublabel": "la clave vive aquí",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "astro",
+      "type": "frontend",
+      "label": "Astro SSR",
+      "sublabel": "demo/web",
+      "tag": "node",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "agente",
+      "type": "backend",
+      "label": "Agente",
+      "sublabel": "10 herramientas",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "gemini",
+      "type": "external",
+      "label": "API de Gemini",
+      "sublabel": "@google/genai",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "id": "chatdb",
+      "type": "database",
+      "label": "Conversaciones",
+      "sublabel": "data/chat.db",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "datos",
+      "type": "backend",
+      "label": "Capa de datos",
+      "sublabel": "WebDataSource",
+      "tag": "solo lectura",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "cola",
+      "type": "messagebus",
+      "label": "Cola",
+      "sublabel": "tabla jobs",
+      "tag": "reclamo atómico",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Worker",
+      "sublabel": "demo/worker",
+      "tag": "lo arranca la web",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "Acervo",
+      "sublabel": "data/pje.db",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "scraper",
+      "type": "backend",
+      "label": "Scraper",
+      "sublabel": "@pje/scraper",
+      "row": 2,
+      "col": 2,
+      "tag": "ritmo limitado"
+    },
+    {
+      "id": "portal",
+      "type": "external",
+      "label": "Portal PJe TRF5",
+      "sublabel": "público",
+      "row": 2,
+      "col": 3
+    },
+    {
+      "id": "pdfs",
+      "type": "database",
+      "label": "PDF",
+      "sublabel": "data/pdfs",
+      "row": 3,
+      "col": 1
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "un contenedor: web + worker sobre la misma base",
+      "wraps": [
+        "astro",
+        "agente",
+        "datos",
+        "cola",
+        "worker",
+        "scraper",
+        "sqlite",
+        "pdfs",
+        "chatdb"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "nav-astro",
+      "from": "navegador",
+      "to": "astro",
+      "label": "HTTP",
+      "variant": "emphasis"
+    },
+    {
+      "id": "astro-agente",
+      "from": "astro",
+      "to": "agente",
+      "label": "SSE por turno",
+      "variant": "emphasis"
+    },
+    {
+      "id": "agente-gemini",
+      "from": "agente",
+      "to": "gemini",
+      "label": "clave del navegador",
+      "variant": "security"
+    },
+    {
+      "id": "astro-datos",
+      "from": "astro",
+      "to": "datos",
+      "label": "lecturas del acervo",
+      "labelDy": 24
+    },
+    {
+      "id": "agente-datos",
+      "from": "agente",
+      "to": "datos",
+      "label": "10 herramientas"
+    },
+    {
+      "id": "datos-chatdb",
+      "from": "datos",
+      "to": "chatdb",
+      "label": "hilos y trazos"
+    },
+    {
+      "id": "datos-cola",
+      "from": "datos",
+      "to": "cola",
+      "label": "encola",
+      "labelDx": 40
+    },
+    {
+      "id": "datos-sqlite",
+      "from": "datos",
+      "to": "sqlite",
+      "label": "consultas y FTS5",
+      "labelDy": 24
+    },
+    {
+      "id": "cola-worker",
+      "from": "cola",
+      "to": "worker",
+      "label": "un trabajo a la vez",
+      "variant": "emphasis"
+    },
+    {
+      "id": "worker-scraper",
+      "from": "worker",
+      "to": "scraper",
+      "label": "handler por tipo"
+    },
+    {
+      "id": "scraper-portal",
+      "from": "scraper",
+      "to": "portal",
+      "label": "GET/POST",
+      "variant": "emphasis",
+      "labelDx": 40
+    },
+    {
+      "id": "scraper-sqlite",
+      "from": "scraper",
+      "to": "sqlite",
+      "label": "escribe lo capturado",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scraper-pdfs",
+      "from": "scraper",
+      "to": "pdfs",
+      "label": "un archivo por documento"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Dos poderes separados",
+      "items": [
+        "Las páginas leen; nunca capturan",
+        "La web solo encola y, si hace falta, arranca un worker",
+        "Matar el servidor no deshace lo que el worker ya escribió"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Una base compartida",
+      "items": [
+        "La cola es una tabla, con reclamo atómico contra varios workers",
+        "El acervo es del scraper; las conversaciones tienen archivo aparte",
+        "Lo que el worker escribe es exactamente lo que las páginas muestran"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "La clave de Gemini",
+      "items": [
+        "Vive en el navegador y viaja con cada pregunta",
+        "No se escribe en ninguna base ni en ningún registro",
+        "Sin clave, todo lo demás del demo sigue funcionando"
+      ]
+    }
+  ]
+}

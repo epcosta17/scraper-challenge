@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "demo/web — páginas, capa de datos y agente",
+    "output": "web.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "paginas",
+        "label": "Las cuatro pantallas",
+        "focus": [
+          "acervo",
+          "busqueda",
+          "procesos",
+          "agentep",
+          "fuente"
+        ],
+        "note": "Ninguna página toca SQLite: todas ven la misma interfaz de datos."
+      },
+      {
+        "id": "turno",
+        "label": "Un turno del agente",
+        "focus": [
+          "agentep",
+          "bucle",
+          "tools",
+          "gemini",
+          "render"
+        ],
+        "note": "El bucle emite eventos mientras trabaja; el render decide qué se convierte en enlace."
+      },
+      {
+        "id": "salidas",
+        "label": "Lo que sale del proceso",
+        "focus": [
+          "fuente",
+          "portalcli",
+          "runner",
+          "acervodb"
+        ],
+        "note": "Tres puertas al exterior: la base, el portal y el worker."
+      }
+    ],
+    "animation": "trace"
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 150,
+    "gapY": 130
+  },
+  "components": [
+    {
+      "id": "acervo",
+      "type": "frontend",
+      "label": "Acervo",
+      "sublabel": "index.astro",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "busqueda",
+      "type": "frontend",
+      "label": "Búsqueda",
+      "sublabel": "8 criterios",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "procesos",
+      "type": "frontend",
+      "label": "Procesos",
+      "sublabel": "cola y fallos",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "agentep",
+      "type": "frontend",
+      "label": "Agente",
+      "sublabel": "agente.astro",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "id": "render",
+      "type": "frontend",
+      "label": "Render",
+      "sublabel": "citas verificadas",
+      "tag": "sin enlaces del modelo",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "bucle",
+      "type": "backend",
+      "label": "Bucle",
+      "sublabel": "14 rondas",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "Herramientas",
+      "sublabel": "10 declaradas",
+      "tag": "datos, nunca prosa",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "gemini",
+      "type": "external",
+      "label": "API de Gemini",
+      "sublabel": "streaming",
+      "row": 2,
+      "col": 3
+    },
+    {
+      "id": "fuente",
+      "type": "backend",
+      "label": "Capa de datos",
+      "sublabel": "WebDataSource",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "acervodb",
+      "type": "database",
+      "label": "Acervo",
+      "sublabel": "data/pje.db",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "portalcli",
+      "type": "external",
+      "label": "Portal TRF5",
+      "sublabel": "en vivo",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "runner",
+      "type": "backend",
+      "label": "Runner",
+      "sublabel": "arranca el worker",
+      "row": 2,
+      "col": 0
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "las cuatro pantallas: ninguna abre la base, todas leen por la capa de datos",
+      "wraps": [
+        "acervo",
+        "busqueda",
+        "procesos",
+        "agentep"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "el agente: diez herramientas y ninguna otra puerta",
+      "wraps": [
+        "render",
+        "bucle",
+        "tools"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "busqueda-fuente",
+      "from": "busqueda",
+      "to": "fuente",
+      "label": "consulta el portal",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "agentep-render",
+      "from": "agentep",
+      "to": "render",
+      "label": "markdown del turno",
+      "variant": "emphasis"
+    },
+    {
+      "id": "render-fuente",
+      "from": "render",
+      "to": "fuente",
+      "label": "¿existe esta cita?",
+      "variant": "security"
+    },
+    {
+      "id": "agentep-bucle",
+      "from": "agentep",
+      "to": "bucle",
+      "label": "SSE",
+      "labelDy": 24
+    },
+    {
+      "id": "bucle-gemini",
+      "from": "bucle",
+      "to": "gemini",
+      "label": "clave por petición",
+      "variant": "security",
+      "labelDy": 24
+    },
+    {
+      "id": "bucle-tools",
+      "from": "bucle",
+      "to": "tools",
+      "label": "una llamada a la vez"
+    },
+    {
+      "id": "tools-fuente",
+      "from": "tools",
+      "to": "fuente",
+      "label": "resultados acotados"
+    },
+    {
+      "id": "fuente-acervodb",
+      "from": "fuente",
+      "to": "acervodb",
+      "label": "SQL y FTS5",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "fuente-portalcli",
+      "from": "fuente",
+      "to": "portalcli",
+      "label": "formulario público"
+    },
+    {
+      "id": "fuente-runner",
+      "from": "fuente",
+      "to": "runner",
+      "label": "si hay algo encolado"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Una sola puerta a los datos",
+      "items": [
+        "Ninguna página abre la base: todas ven WebDataSource",
+        "Las vistas solo conocen los tipos de ./types.ts",
+        "Cambiar de SQLite a otra cosa no toca ninguna pantalla"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "El agente no improvisa",
+      "items": [
+        "Diez herramientas: sin cliente HTTP ni base propios",
+        "Cada resultado viene acotado y dice si fue recortado",
+        "Las herramientas devuelven datos; la prosa la escribe el modelo"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Una cita es un enlace solo si existe",
+      "items": [
+        "El modelo nunca escribe URLs; las pone la aplicación",
+        "Un número se enlaza tras confirmarlo contra el acervo",
+        "Lo no confirmado se muestra como texto, no se oculta"
+      ]
+    }
+  ]
+}

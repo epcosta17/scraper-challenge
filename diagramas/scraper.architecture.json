@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Scraper del TRF5 — packages/",
+    "output": "scraper.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "ida",
+        "label": "Camino de ida",
+        "focus": [
+          "cli",
+          "crawl",
+          "session",
+          "http",
+          "portal"
+        ],
+        "note": "La sesión JSF se abre antes de cualquier consulta, y el cliente HTTP es lo único que habla con el tribunal."
+      },
+      {
+        "id": "paginacion",
+        "label": "Las dos paginaciones",
+        "focus": [
+          "crawl",
+          "pagers",
+          "http",
+          "portal"
+        ],
+        "note": "Partes y movimientos paginan con envoltorios A4J distintos; enviar el equivocado devuelve la página uno sin error."
+      },
+      {
+        "id": "persistencia",
+        "label": "Lo que queda escrito",
+        "focus": [
+          "parse",
+          "repos",
+          "sqlite",
+          "fts",
+          "blobs",
+          "failures"
+        ],
+        "note": "Una lectura incompleta se registra como fallo: la base no miente por omisión."
+      }
+    ],
+    "animation": "trace"
+  },
+  "components": [
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI del scraper",
+      "sublabel": "crawl · deep · search",
+      "tag": "node --experimental-strip-types",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "crawl",
+      "type": "backend",
+      "label": "Recorrido",
+      "sublabel": "enumerate · deep",
+      "tag": "marca de agua por id",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "session",
+      "type": "security",
+      "label": "Sesión JSF / Seam",
+      "sublabel": "ViewState · token ca",
+      "tag": "vista sin estado",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "http",
+      "type": "backend",
+      "label": "Cliente HTTP",
+      "sublabel": "cookies · reintentos",
+      "tag": "límite de req/s",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "portal",
+      "type": "external",
+      "label": "Portal PJe del TRF5",
+      "sublabel": "WildFly · RichFaces",
+      "tag": "público",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "id": "pagers",
+      "type": "backend",
+      "label": "Paginadores A4J",
+      "sublabel": "partes · movimientos",
+      "tag": "dos envoltorios distintos",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "parse",
+      "type": "backend",
+      "label": "Parseo",
+      "sublabel": "HTML · PDF · documentos",
+      "tag": "ISO-8859-1 y UTF-8",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "repos",
+      "type": "backend",
+      "label": "Repositorios",
+      "sublabel": "@pje/core",
+      "tag": "@pje/core",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "data/pje.db",
+      "tag": "WAL",
+      "row": 2,
+      "col": 0
+    },
+    {
+      "id": "fts",
+      "type": "database",
+      "label": "Índice FTS5",
+      "sublabel": "BM25 sin diacríticos",
+      "tag": "sincronizado por triggers",
+      "row": 3,
+      "col": 0
+    },
+    {
+      "id": "blobs",
+      "type": "database",
+      "label": "Almacén de PDF",
+      "sublabel": "data/pdfs",
+      "tag": "clave validada",
+      "row": 3,
+      "col": 1
+    },
+    {
+      "id": "failures",
+      "type": "database",
+      "label": "Fallos y sondeos",
+      "sublabel": "lo que no se pudo leer",
+      "tag": "sin silencios",
+      "row": 3,
+      "col": 2
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "packages/scraper — todo lo que sabe del portal",
+      "wraps": [
+        "crawl",
+        "session",
+        "http",
+        "parse",
+        "pagers"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "packages/core — todo lo que sabe de la base",
+      "wraps": [
+        "repos",
+        "sqlite",
+        "fts",
+        "blobs",
+        "failures"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-crawl",
+      "from": "cli",
+      "to": "crawl",
+      "label": "rango o marca de agua",
+      "variant": "emphasis"
+    },
+    {
+      "id": "crawl-http",
+      "from": "crawl",
+      "to": "http",
+      "label": "una petición por paso",
+      "variant": "emphasis"
+    },
+    {
+      "id": "crawl-pagers",
+      "from": "crawl",
+      "to": "pagers",
+      "label": "páginas que falten",
+      "labelDy": 24
+    },
+    {
+      "id": "session-http",
+      "from": "session",
+      "to": "http",
+      "label": "ViewState + ca",
+      "variant": "security"
+    },
+    {
+      "id": "pagers-http",
+      "from": "pagers",
+      "to": "http",
+      "label": "POST A4J"
+    },
+    {
+      "id": "http-portal",
+      "from": "http",
+      "to": "portal",
+      "label": "GET/POST con ritmo",
+      "variant": "emphasis"
+    },
+    {
+      "id": "http-parse",
+      "from": "http",
+      "to": "parse",
+      "label": "HTML y PDF",
+      "labelDy": 24
+    },
+    {
+      "id": "parse-repos",
+      "from": "parse",
+      "to": "repos",
+      "label": "registros validados",
+      "variant": "emphasis"
+    },
+    {
+      "id": "parse-failures",
+      "from": "parse",
+      "to": "failures",
+      "label": "lo que no cuadró",
+      "variant": "dashed",
+      "labelDy": 24
+    },
+    {
+      "id": "repos-sqlite",
+      "from": "repos",
+      "to": "sqlite",
+      "label": "upsert por id interno",
+      "variant": "emphasis"
+    },
+    {
+      "id": "repos-blobs",
+      "from": "repos",
+      "to": "blobs",
+      "label": "un PDF por documento",
+      "labelDy": 24
+    },
+    {
+      "id": "sqlite-fts",
+      "from": "sqlite",
+      "to": "fts",
+      "label": "triggers",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "El portal manda",
+      "items": [
+        "Vista JSF sin estado: el ViewState es un literal, no un token de sesión",
+        "El expediente llega en ISO-8859-1 y su propio fragmento AJAX en UTF-8",
+        "Las partes y los movimientos paginan con envoltorios A4J distintos"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "La base es la verdad",
+      "items": [
+        "Un id interno identifica el expediente; el número CNJ puede faltar",
+        "FTS5 se mantiene con triggers, no con escrituras desde el código",
+        "La precedencia de fuentes de movimientos vive en el repositorio"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "El silencio es el enemigo",
+      "items": [
+        "El portal falla devolviendo la página uno, no un error",
+        "Cada lectura incompleta queda registrada como fallo con su motivo",
+        "Un expediente sin número se marca una vez y no se reintenta"
+      ]
+    }
+  ],
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 150,
+    "gapY": 130
+  }
+}
