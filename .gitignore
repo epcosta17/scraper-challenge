@@ -10,3 +10,6 @@ docs/
 
 # scraped output and runtime caches
 data/
+
+# ruido de macOS
+.DS_Store

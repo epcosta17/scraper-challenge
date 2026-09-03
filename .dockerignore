@@ -1,0 +1,17 @@
+# Everything the image builds for itself, or must never carry.
+node_modules
+**/node_modules
+**/dist
+.git
+.github
+
+# The acervo is a volume, not image content: baking one in would ship a
+# snapshot of the court inside the image and make it enormous.
+data
+
+# Working notes and the design file, neither of which the container runs.
+docs
+web.pen
+.playwright-mcp
+*.log
+.DS_Store
