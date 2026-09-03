@@ -7,8 +7,18 @@ import {
   encodeFormComponent, encodeSearchBody,
 } from '../src/pje/search.ts'
 
+/**
+ * Fixtures are read the way production reads the response they came from.
+ *
+ * This portal serves its pages in ISO-8859-1 and its AJAX fragments in UTF-8,
+ * declaring neither — so `list-view.html` (a page) is Latin-1 and
+ * `search-results.xml` (a fragment) is UTF-8, exactly as captured. Reading both
+ * the same way is how an encoding bug hides: with only ASCII fields asserted,
+ * nothing fails.
+ */
 const fx = (n: string) =>
-  readFileSync(fileURLToPath(new URL(`./fixtures/${n}`, import.meta.url)), 'latin1')
+  readFileSync(fileURLToPath(new URL(`./fixtures/${n}`, import.meta.url)),
+    n.endsWith('.xml') ? 'utf8' : 'latin1')
 
 const session = { actionUrl: 'https://x/listView.seam;jsessionid=A', submitParam: 'fPP:j_id244' }
 const today = new Date('2026-08-31T00:00:00Z')
@@ -199,5 +209,48 @@ describe('parseSearchResponse', () => {
       '<span id="fPP:processosTable:123:foo">malformed row, no number or ca here</span>',
     ].join('\n')
     expect(() => parseSearchResponse(xml)).toThrow(ActionNotExecutedError)
+  })
+})
+
+describe('what a result row carries beyond its identifiers', () => {
+  /**
+   * The portal's list shows the class, the subject, the parties and the last
+   * movement in every row, and the parser read only the number and the `ca` —
+   * discarding data that arrives in a response already paid for. The brief
+   * asked for every field available on a document; these are the free ones.
+   */
+  const rows = parseSearchResponse(fx('search-results.xml')).rows
+
+  it('reads the class, subject, parties and last movement', () => {
+    expect(rows[0]).toMatchObject({
+      number: '0000148-15.2005.4.05.8001',
+      className: 'APELAÇÃO CÍVEL',
+      subject: 'Penhora / Depósito/ Avaliação',
+      lastMovement: {
+        description: 'Conclusos para julgamento',
+        timestamp: '28/08/2026 15:04:16',
+      },
+    })
+    expect(rows[0]!.parties).toContain('FAZENDA NACIONAL')
+  })
+
+  it('keeps the accents, which is what the encoding fix was about', () => {
+    // This response is a UTF-8 AJAX fragment, not a Latin-1 page. Decoded the
+    // old way, this subject reads "Prescrição e Decadência".
+    expect(rows.map((r) => r.subject)).toContain('Prescrição e Decadência')
+  })
+
+  it('fills these in for every row, not only the first', () => {
+    // A parser that works on row one and quietly gives up on the rest is the
+    // failure this asserts against.
+    expect(rows.filter((r) => r.className !== undefined)).toHaveLength(rows.length)
+    expect(rows.filter((r) => r.lastMovement !== undefined)).toHaveLength(rows.length)
+  })
+
+  it('still returns the identifiers a row exists for', () => {
+    // The new fields are a bonus; losing a `ca` to gain a subject would be a
+    // bad trade, since the `ca` is what opens the case file.
+    expect(rows).toHaveLength(30)
+    expect(rows.every((r) => r.ca.length === 48 || r.ca.length === 32)).toBe(true)
   })
 })

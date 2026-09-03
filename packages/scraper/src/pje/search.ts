@@ -1,4 +1,5 @@
-import { HttpClient, decodeLatin1 } from '../http/client.ts'
+import * as cheerio from 'cheerio'
+import { HttpClient } from '../http/client.ts'
 import type { PjeSession } from './session.ts'
 
 export interface SearchFilters {
@@ -128,6 +129,75 @@ export interface SearchRow {
   idProcessoTrf: number
   number: string
   ca: string
+  /**
+   * What the result row already carries, beyond the identifiers.
+   *
+   * The portal's own list shows the class, the subject, the parties and the
+   * last movement in every row. Reading only the number and the `ca` threw all
+   * of that away — and it is free: it arrives in a response already paid for,
+   * with no second request.
+   *
+   * Every field is optional because the row belongs to the portal, not to us:
+   * a case with no movements yet has no last movement, and a column that moves
+   * should cost one field, not the row.
+   */
+  className?: string
+  subject?: string
+  parties?: string
+  lastMovement?: { description: string; timestamp?: string }
+}
+
+/** `Conclusos para julgamento (28/08/2026 15:04:16)` */
+const MOVEMENT_RE = /^(.*?)\s*\((\d{2}\/\d{2}\/\d{4}[^)]*)\)\s*$/
+
+const tidy = (raw: string): string => raw.replace(/\s+/g, ' ').trim()
+
+/**
+ * The cells of one result row: the details link, the case, the last movement.
+ *
+ * Read with cheerio for the same reason as the detail page — it decodes the
+ * entities, so `&ccedil;` arrives as `ç` — and defensively throughout: a field
+ * that does not match is left undefined rather than throwing, because the
+ * identifiers are what the row is *for*, and a reordered column should not
+ * stop a search from working.
+ */
+function parseRowCells(chunk: string): Omit<SearchRow, 'idProcessoTrf' | 'number' | 'ca'> {
+  const out: Omit<SearchRow, 'idProcessoTrf' | 'number' | 'ca'> = {}
+  // Wrapped before parsing, for two reasons that bite together: an HTML parser
+  // discards `<td>` outside a table, and the chunk is sliced from a marker that
+  // sits inside the first cell, so its opening tag is missing. The prefix
+  // supplies both the table and that tag.
+  const $ = cheerio.load(`<table><tr><td ${chunk}</td></tr></table>`)
+
+  // Found by shape, not by column index. A row's chunk is sliced between two
+  // markers that sit *inside* the first cell, so its opening tag is cut off and
+  // the cells do not start where counting would say they do.
+  const headline = $('b.btn-block').first()
+  if (headline.length === 0) return out
+
+  const heading = tidy(headline.text())
+  const dash = heading.split(' - ')
+  if (dash.length > 1) out.subject = dash.slice(1).join(' - ')
+
+  const caseCell = headline.closest('td')
+  const link = headline.closest('a')
+  if (caseCell.length > 0 && link.length > 0) {
+    const parts = caseCell.contents()
+    const at = parts.index(link)
+    const before = tidy(parts.slice(0, at).text())
+    if (before !== '') out.className = before
+    const after = tidy(parts.slice(at + 1).text())
+    if (after !== '') out.parties = after
+  }
+
+  const movement = tidy(caseCell.next('td').text())
+  if (movement !== '') {
+    const m = MOVEMENT_RE.exec(movement)
+    out.lastMovement = m
+      ? { description: m[1]!.trim(), timestamp: m[2]!.trim() }
+      : { description: movement }
+  }
+  return out
 }
 
 export interface SearchOutcome {
@@ -170,7 +240,7 @@ export function parseSearchResponse(xml: string): SearchOutcome {
     const chunk = xml.slice(start, end)
     const number = NUMBER_RE.exec(chunk)?.[1]
     const ca = CA_RE.exec(chunk)?.[1]
-    if (number && ca) rows.push({ idProcessoTrf: id, number, ca })
+    if (number && ca) rows.push({ idProcessoTrf: id, number, ca, ...parseRowCells(chunk) })
     else dropped++
   }
 
@@ -246,5 +316,11 @@ export async function search(
       'Referer': session.actionUrl,
     },
   })
-  return parseSearchResponse(decodeLatin1(res.body))
+  // UTF-8, not Latin-1. This portal serves a page in ISO-8859-1 and its own
+  // AJAX fragments in UTF-8, declaring neither — the same split already handled
+  // in `movement-pages.ts`. Decoding this response as Latin-1 was harmless
+  // while only the number and the `ca` were read, since both are ASCII; it
+  // turns every accented class, subject and party name into mojibake the
+  // moment those are read too.
+  return parseSearchResponse(res.body.toString('utf8'))
 }
