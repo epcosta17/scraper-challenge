@@ -1,0 +1,13 @@
+# Los saltos de línea los decide el repositorio, no el sistema de quien clona.
+#
+# Sin esto, Git en Windows convierte a CRLF al sacar los archivos, y un script
+# de shell con CRLF no arranca dentro del contenedor: el kernel lee el shebang
+# como `/bin/bash\r`, busca un intérprete con ese nombre y responde «no such
+# file or directory» culpando al script.
+* text=auto eol=lf
+
+# Nunca convertir: se rompen si se tocan.
+*.png binary
+*.webp binary
+*.pdf binary
+*.pen binary

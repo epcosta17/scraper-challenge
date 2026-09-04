@@ -49,6 +49,13 @@ RUN apt-get update \
 # but never capture anything.
 COPY --from=build /app /app
 
+# Line endings, normalised in the image rather than trusted from the build
+# context. `.gitattributes` fixes a fresh clone, but anyone who cloned before it
+# existed still has CRLF on disk, and a shell script with CRLF does not start:
+# the kernel reads the shebang as `/bin/bash\r`. This makes the build work
+# either way, and costs one line.
+RUN find . -name '*.sh' -type f -exec sed -i 's/\r$//' {} +
+
 # Where the acervo lives. Declared so `docker run` without `-v` still works and
 # says, by its presence, which directory is worth keeping.
 VOLUME /app/data
@@ -73,4 +80,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4321)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["./docker/start.sh"]
+CMD ["bash", "docker/start.sh"]
